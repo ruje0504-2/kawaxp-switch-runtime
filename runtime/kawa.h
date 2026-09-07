@@ -48,6 +48,7 @@ void frontend_present(void);
 void frontend_text(const char *text);
 void frontend_quake(unsigned level); /* 0=stop, >0=start screen shake at that level */
 void frontend_msk_note(unsigned idx); /* util35 transition mask index validation */
+bool frontend_xfade_start(unsigned idx); /* util35 masked crossfade: true while animating */
 void set_choices(const char **items,unsigned count,int kind);
 void audio_load(int ch,const char *name);
 void audio_play(int ch,bool loop);

@@ -1,8 +1,17 @@
 /* GPL-2.0-or-later. Audio: decode .wav (RIFF PCM) natively and .ogg via
- * libsndfile (host) or vorbisfile (Switch, where sndfile is unavailable). */
+ * libsndfile (host) or vorbisfile (Switch, where sndfile is unavailable).
+ *
+ * Switch multi-core: full-file decode (ogg/vorbis + resample) used to run
+ * synchronously on the VM thread at every message/voice boundary, stalling the
+ * frame loop for 50-300ms on the A57. Decode now runs on a dedicated worker
+ * thread pinned to a free core; audio_load() only enqueues, and a voice starts
+ * as soon as its decode lands (want_play). */
 #include "kawa.h"
 #include <stdlib.h>
 #include <string.h>
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
 #ifdef __SWITCH__
 #include <vorbis/vorbisfile.h>
 struct smem { const unsigned char *p; size_t n, pos; };
@@ -80,14 +89,180 @@ static void mix(void *ud,Uint8 *out,int n) {
  for(int i=0;i<n/4;i++)dst[i]=dst[i]>1?1:dst[i]<-1?-1:dst[i];
 }
 static int audio_forced(void){const char*e=getenv("KAWA_AUDIO");return e&&e[0];}
+
+/* ---- Switch async decode worker -----------------------------------------
+ * Every voice/SE/BGM used to be fully decoded (vorbis/RIFF + resample) on the
+ * VM thread at the message boundary it plays for - a 50-300ms stall per line.
+ * Decode now runs on a dedicated worker thread pinned to a spare core:
+ *   - audio_load() only bumps the channel generation and queues the name;
+ *   - the worker fetches the archive entry and decodes it on its own core;
+ *   - when the decode lands it is installed under the SDL device lock and, if
+ *     audio_play() had already been requested (want_play), playback starts.
+ * Lock order is always: SDL device lock -> adec_mu (never the reverse). */
+#ifdef __SWITCH__
+static Thread adec_thr;
+static Mutex adec_mu;
+static CondVar adec_cv;
+static bool adec_run;
+static uint32_t adec_gen[5];            /* bumped on every audio_load */
+static bool adec_loading[5];            /* current-gen decode not installed yet */
+static struct { char name[128]; bool queued; } adec_job[5];
+static bool want_play[5];
+static bool want_loop[5];
+static int adec_core(void){
+ const char*e=getenv("KAWA_CORE_AUDIO");
+ if(e&&*e&&strcmp(e,"any")){int c=atoi(e);if(c>=0&&c<=3)return c;}
+ return 2; /* default: spare core (user observed 1/2 idle; game+HOS on 0/3) */
+}
+static void *adec_process(int ch,const char *name,struct archive_data **d_out,size_t *frames_out,uint32_t *loop0,uint32_t *loop1){
+ *d_out=NULL;*frames_out=0;*loop0=0;*loop1=0;
+ struct archive_data *d=NULL;
+ if(ch==0||ch==4){if(arcs[ch])d=archive_get(arcs[ch],name);}
+ else for(int i=1;i<4&&!d;i++)if(arcs[i]&&archive_get_index(arcs[i],name)>=0)d=archive_get(arcs[i],name);
+ if(!d)return NULL;
+ float *raw=NULL;int ach=0,arate=0;long got=switch_decode(d->data,d->size,&raw,&ach,&arate);
+ if(got<=0||!raw){free(raw);return NULL;}
+ SDL_AudioCVT cvt;int ret=SDL_BuildAudioCVT(&cvt,AUDIO_F32SYS,ach,arate,AUDIO_F32SYS,2,44100);
+ if(ret<0){free(raw);return NULL;}
+ cvt.len=(size_t)got*ach*4;cvt.buf=malloc((size_t)cvt.len*cvt.len_mult);
+ if(!cvt.buf){free(raw);return NULL;}
+ memcpy(cvt.buf,raw,cvt.len);free(raw);
+ if(ret){if(SDL_ConvertAudio(&cvt)){free(cvt.buf);return NULL;}}else cvt.len_cvt=cvt.len;
+ *frames_out=cvt.len_cvt/8;
+ if(d->meta.loop_start<d->meta.loop_end&&d->meta.loop_end<=*frames_out){*loop0=d->meta.loop_start;*loop1=d->meta.loop_end;}
+ *d_out=d;
+ return cvt.buf;
+}
+/* install a finished decode under the device lock; re-checks the generation
+ * (a newer load may have been queued while we were decoding). */
+static void adec_install(int ch,uint32_t mygen,void *buf,size_t frames,uint32_t loop0,uint32_t loop1,struct archive_data *d){
+ SDL_LockAudioDevice(device);
+ mutexLock(&adec_mu);
+ bool current=adec_gen[ch]==mygen;
+ bool start=false;
+ if(current){
+  struct channel *c=&channels[ch];free(c->data);memset(c,0,sizeof(*c));
+  c->data=(float*)buf;c->frames=frames;c->loop_end=frames;
+  if(loop0<loop1&&loop1<=frames){c->loop_start=loop0;c->loop_end=loop1;}
+  if(want_play[ch]){want_play[ch]=false;start=true;c->loop=want_loop[ch];}
+  adec_loading[ch]=false;
+ }
+ mutexUnlock(&adec_mu);
+ if(current&&start){channels[ch].pos=0;channels[ch].playing=true;}
+ SDL_UnlockAudioDevice(device);
+ if(d)archive_data_release(d);
+ if(current)
+  note("AUDIO OK ch=%d frames=%lu loop=[%lu,%lu)",ch,(unsigned long)frames,(unsigned long)loop0,(unsigned long)loop1);
+ else
+  {free(buf);note("AUDIO SKIP stale ch=%d",ch);}
+}
+static void adec_entry(void *arg){
+ (void)arg;
+ note("AUDIO worker started on core %d",svcGetCurrentProcessorNumber());
+ for(;;){
+  int ch=-1;
+  mutexLock(&adec_mu);
+  for(;;){
+   if(!adec_run){mutexUnlock(&adec_mu);return;}
+   for(int i=0;i<5;i++)if(adec_job[i].queued){ch=i;break;}
+   if(ch>=0)break;
+   condvarWait(&adec_cv,&adec_mu);
+  }
+  char name[128];snprintf(name,sizeof(name),"%s",adec_job[ch].name);
+  adec_job[ch].queued=false;
+  uint32_t mygen=adec_gen[ch];
+  mutexUnlock(&adec_mu);
+  struct archive_data *d=NULL;size_t frames=0;uint32_t l0=0,l1=0;
+  void *buf=adec_process(ch,name,&d,&frames,&l0,&l1);
+  mutexLock(&adec_mu);
+  bool current=adec_gen[ch]==mygen;
+  mutexUnlock(&adec_mu);
+  if(!buf){
+   if(d)archive_data_release(d);
+   mutexLock(&adec_mu);
+   if(current)adec_loading[ch]=false;
+   mutexUnlock(&adec_mu);
+   note("AUDIO DECODE failed %s",name);
+   continue;
+  }
+  if(!current){free(buf);if(d)archive_data_release(d);continue;} /* superseded */
+  adec_install(ch,mygen,buf,frames,l0,l1,d);
+ }
+}
+static void adec_start(void){
+ mutexInit(&adec_mu);condvarInit(&adec_cv);adec_run=true;
+ int core=adec_core();
+ Result rc=threadCreate(&adec_thr,adec_entry,NULL,NULL,0x10000,0x30,core);
+ if(rc==0)rc=threadStart(&adec_thr);
+ if(rc!=0){adec_run=false;note("AUDIO worker thread failed rc=0x%x",rc);}
+}
+static void adec_stop(void){
+ if(!adec_run)return;
+ mutexLock(&adec_mu);adec_run=false;condvarWakeAll(&adec_cv);mutexUnlock(&adec_mu);
+ threadWaitForExit(&adec_thr);threadClose(&adec_thr);
+ adec_run=false;
+}
+#endif
+
 void audio_init(void) {
  if(smoke&&!audio_forced())return;
  const char *names[]={"bgm.AWF","effect.AWF","effect2.AWF","effect3.AWF","voice.ARC"};
  for(int i=0;i<5;i++){char p[1200];snprintf(p,sizeof(p),"%s/%s",data_dir,names[i]);arcs[i]=archive_open(p,ARCHIVE_RAW);}
  SDL_AudioSpec spec={.freq=44100,.format=AUDIO_F32SYS,.channels=2,.samples=1024,.callback=mix};
  device=SDL_OpenAudioDevice(NULL,0,&spec,NULL,0);if(device)SDL_PauseAudioDevice(device,0);else note("AUDIO unavailable %s",SDL_GetError());
+#ifdef __SWITCH__
+ if(device&&!getenv("KAWA_AUDIOSYNC"))adec_start();
+#endif
 }
 void audio_stop(int ch){if(ch<0||ch>=5||!device)return;SDL_LockAudioDevice(device);channels[ch].playing=false;SDL_UnlockAudioDevice(device);}
+#ifdef __SWITCH__
+void audio_load(int ch,const char *name) {
+ if(ch<0||ch>=5)return;
+ note("AUDIO LOAD ch=%d %s",ch,name);if((smoke&&!audio_forced())||!device)return;
+ if(!adec_run||getenv("KAWA_AUDIOSYNC")) {
+  /* synchronous fallback: worker unavailable or KAWA_AUDIOSYNC=1 */
+  audio_stop(ch);struct archive_data *d=NULL;
+  if(ch==0||ch==4){if(arcs[ch])d=archive_get(arcs[ch],name);}
+  else for(int i=1;i<4&&!d;i++)if(arcs[i]&&archive_get_index(arcs[i],name)>=0)d=archive_get(arcs[i],name);
+  if(!d){note("AUDIO MISSING %s",name);return;}
+  float *raw=NULL;int ach=0,arate=0;long got=-1;
+  got=switch_decode(d->data,d->size,&raw,&ach,&arate);
+  if(got<=0||!raw){note("AUDIO DECODE failed %s",name);free(raw);archive_data_release(d);return;}
+  SDL_AudioCVT cvt;int ret=SDL_BuildAudioCVT(&cvt,AUDIO_F32SYS,ach,arate,AUDIO_F32SYS,2,44100);
+  if(ret<0){free(raw);archive_data_release(d);return;}
+  cvt.len=(size_t)got*ach*4;cvt.buf=malloc((size_t)cvt.len*cvt.len_mult);
+  if(!cvt.buf){free(raw);archive_data_release(d);return;}
+  memcpy(cvt.buf,raw,cvt.len);free(raw);
+  if(ret){if(SDL_ConvertAudio(&cvt)){free(cvt.buf);archive_data_release(d);return;}}else cvt.len_cvt=cvt.len;
+  SDL_LockAudioDevice(device);struct channel *c=&channels[ch];free(c->data);memset(c,0,sizeof(*c));c->data=(float*)cvt.buf;c->frames=cvt.len_cvt/8;c->loop_end=c->frames;
+  if(d->meta.loop_start<d->meta.loop_end&&d->meta.loop_end<=c->frames){c->loop_start=d->meta.loop_start;c->loop_end=d->meta.loop_end;}
+  SDL_UnlockAudioDevice(device);archive_data_release(d);
+  note("AUDIO OK ch=%d frames=%lu loop=[%lu,%lu)",ch,(unsigned long)c->frames,(unsigned long)c->loop_start,(unsigned long)c->loop_end);
+  return;
+ }
+ /* async: stop current clip now, queue latest-wins decode on the worker */
+ audio_stop(ch);
+ mutexLock(&adec_mu);
+ adec_gen[ch]++;
+ snprintf(adec_job[ch].name,sizeof(adec_job[ch].name),"%s",name);
+ adec_job[ch].queued=true;
+ adec_loading[ch]=true;
+ want_play[ch]=false;want_loop[ch]=false;
+ mutexUnlock(&adec_mu);
+ condvarWakeAll(&adec_cv);
+}
+void audio_play(int ch,bool loop){
+ if(ch<0||ch>=5||!device)return;
+ /* If a decode for this channel is still in flight, don't start the previous
+  * clip; remember the request and start as soon as the new data lands. */
+ mutexLock(&adec_mu);
+ if(adec_loading[ch]){want_play[ch]=true;want_loop[ch]=loop;mutexUnlock(&adec_mu);return;}
+ mutexUnlock(&adec_mu);
+ SDL_LockAudioDevice(device);
+ if(channels[ch].data){channels[ch].pos=0;channels[ch].loop=loop;channels[ch].playing=true;}
+ SDL_UnlockAudioDevice(device);
+}
+#else
 void audio_load(int ch,const char *name) {
  if(ch<0||ch>=5)return;
  note("AUDIO LOAD ch=%d %s",ch,name);if((smoke&&!audio_forced())||!device)return;
@@ -96,11 +271,7 @@ void audio_load(int ch,const char *name) {
  else for(int i=1;i<4&&!d;i++)if(arcs[i]&&archive_get_index(arcs[i],name)>=0)d=archive_get(arcs[i],name);
  if(!d){note("AUDIO MISSING %s",name);return;}
  float *raw=NULL;int ach=0,arate=0;long got=-1;
-#ifdef __SWITCH__
- got=switch_decode(d->data,d->size,&raw,&ach,&arate);
-#else
  got=host_decode(d->data,d->size,&raw,&ach,&arate);
-#endif
  if(got<=0||!raw){note("AUDIO DECODE failed %s",name);free(raw);archive_data_release(d);return;}
  SDL_AudioCVT cvt;
  int ret=SDL_BuildAudioCVT(&cvt,AUDIO_F32SYS,ach,arate,AUDIO_F32SYS,2,44100);
@@ -115,4 +286,10 @@ void audio_load(int ch,const char *name) {
  note("AUDIO OK ch=%d frames=%lu loop=[%lu,%lu)",ch,(unsigned long)c->frames,(unsigned long)c->loop_start,(unsigned long)c->loop_end);
 }
 void audio_play(int ch,bool loop){if(ch<0||ch>=5||!device)return;SDL_LockAudioDevice(device);channels[ch].pos=0;channels[ch].loop=loop;channels[ch].playing=true;SDL_UnlockAudioDevice(device);}
-void audio_fini(void){if(device)SDL_CloseAudioDevice(device);for(int i=0;i<5;i++){free(channels[i].data);if(arcs[i])archive_close(arcs[i]);}}
+#endif
+void audio_fini(void){
+#ifdef __SWITCH__
+ adec_stop();
+#endif
+ if(device)SDL_CloseAudioDevice(device);for(int i=0;i<5;i++){free(channels[i].data);if(arcs[i])archive_close(arcs[i]);}
+}

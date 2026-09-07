@@ -1,6 +1,13 @@
 /* GPL-2.0-or-later. Switch text backend: raw FreeType2.
  * Renders wrapped UTF-8 into a 32-bit RGBA surface (simple per-char wrap,
- * no kerning; adequate dev quality). Replaces SDL_ttf for devkitA64. */
+ * no kerning; adequate dev quality). Replaces SDL_ttf for devkitA64.
+ *
+ * Glyph cache: FreeType rasterisation (FT_LOAD_RENDER) is by far the most
+ * expensive text operation on the Switch A57. Every dialogue line used to
+ * re-rasterise every glyph twice (shadow pass + colour pass) per line change,
+ * which measured 100-300ms single-frame hitches on device. Glyph bitmaps are
+ * now cached per codepoint (8-bit coverage, colour applied at blend time) so a
+ * new line is mostly cache hits; only glyphs never seen before are rasterised. */
 #include "text.h"
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -9,14 +16,40 @@
 struct kawa_font { FT_Face face; FT_Library lib; int px; };
 static FT_Library g_lib;
 static int g_lib_ok;
+
+#define GLY_CACHE_SLOTS 16384 /* open addressing; Japanese text set is a few thousand */
+struct gly_ent { uint32_t cp; int left, top, adv; uint16_t w, h; unsigned char *bmp; uint8_t metric, ready; };
+static struct gly_ent *gly_cache;
+static void gly_cache_clear(void) {
+	if (!gly_cache) return;
+	for (unsigned i = 0; i < GLY_CACHE_SLOTS; i++) { free(gly_cache[i].bmp); gly_cache[i].cp = 0; gly_cache[i].metric = 0; gly_cache[i].ready = 0; }
+}
 int kawa_text_init(void){return 0;}
-void kawa_text_fini(void){if(g_lib_ok){FT_Done_FreeType(g_lib);g_lib_ok=0;}}
+void kawa_text_fini(void){
+	if (gly_cache) { gly_cache_clear(); free(gly_cache); gly_cache = NULL; }
+	if (g_lib_ok) { FT_Done_FreeType(g_lib); g_lib_ok = 0; }
+}
+
+static struct gly_ent *gly_find_slot(uint32_t cp) {
+	if (!gly_cache) gly_cache = calloc(GLY_CACHE_SLOTS, sizeof(struct gly_ent));
+	if (!gly_cache) return NULL;
+	unsigned h = (unsigned)(cp * 2654435761u);
+	for (unsigned i = 0; i < GLY_CACHE_SLOTS; i++) {
+		struct gly_ent *e = &gly_cache[(h + i) & (GLY_CACHE_SLOTS - 1)];
+		if (!e->cp) return e;
+		if (e->cp == cp) return e;
+	}
+	/* table full: drop everything, start over */
+	gly_cache_clear();
+	return gly_cache;
+}
 static void blend_px(unsigned char *px, int stride, int x, int y, int w, int h,
-                     const unsigned char *src, Uint32 color, int xo, int yo) {
+                     const unsigned char *src, int srcpitch, Uint32 color, int xo, int yo) {
 	unsigned cr = color & 255, cg = (color >> 8) & 255, cb = (color >> 16) & 255;
 	for (int j = 0; j < h; j++) {
+		const unsigned char *sr = src + (size_t)j * srcpitch;
 		for (int i = 0; i < w; i++) {
-			unsigned a = src[(size_t)j * w + i];
+			unsigned a = sr[i];
 			if (!a) continue;
 			int dx = x + xo + i, dy = y + yo + j;
 			if (dx < 0 || dy < 0) continue;
@@ -48,11 +81,52 @@ static unsigned next_cp(const char **sp) {
 	*sp += n;
 	return c;
 }
+/* cached advance for layout (no rasterisation) */
 static unsigned glyph_advance(struct kawa_font *k, unsigned cp) {
-	FT_UInt gi = FT_Get_Char_Index(k->face, cp);
-	if (!gi) return 0;
-	if (FT_Load_Glyph(k->face, gi, FT_LOAD_DEFAULT)) return 0;
-	return (unsigned)(k->face->glyph->advance.x >> 6);
+	struct gly_ent *e = gly_find_slot(cp);
+	if (!e) return 0;
+	if (!e->metric) {
+		if (!e->cp) e->cp = cp;
+		FT_UInt gi = FT_Get_Char_Index(k->face, cp);
+		e->metric = 1;
+		if (gi && !FT_Load_Glyph(k->face, gi, FT_LOAD_DEFAULT))
+			e->adv = (int)(k->face->glyph->advance.x >> 6);
+	}
+	return e->adv > 0 ? (unsigned)e->adv : 0;
+}
+/* rasterise once per glyph and blend it; returns the advance consumed */
+static int glyph_draw(struct kawa_font *k, unsigned cp, int x, int y,
+                      unsigned char *px, int stride, Uint32 color) {
+	struct gly_ent *e = gly_find_slot(cp);
+	if (!e) return 0;
+	if (!e->metric) {
+		if (!e->cp) e->cp = cp;
+		FT_UInt gi = FT_Get_Char_Index(k->face, cp);
+		e->metric = 1;
+		if (gi && !FT_Load_Glyph(k->face, gi, FT_LOAD_DEFAULT))
+			e->adv = (int)(k->face->glyph->advance.x >> 6);
+	}
+	if (!e->ready) {
+		FT_UInt gi = FT_Get_Char_Index(k->face, cp);
+		if (!gi) { e->ready = 1; return e->adv; }
+		if (FT_Load_Glyph(k->face, gi, FT_LOAD_RENDER)) { e->ready = 1; return e->adv; }
+		FT_GlyphSlot sl = k->face->glyph;
+		e->left = sl->bitmap_left; e->top = sl->bitmap_top;
+		e->w = (uint16_t)sl->bitmap.width; e->h = (uint16_t)sl->bitmap.rows;
+		if (e->w && e->h && sl->bitmap.buffer) {
+			e->bmp = malloc((size_t)e->h * e->w);
+			if (e->bmp) {
+				for (int j = 0; j < e->h; j++)
+					memcpy(e->bmp + (size_t)j * e->w,
+					       sl->bitmap.buffer + (size_t)j * sl->bitmap.pitch, e->w);
+			}
+		}
+		e->ready = 1;
+	}
+	if (e->bmp && e->w && e->h)
+		blend_px(px, stride, x, y, e->w, e->h, e->bmp, e->w, color,
+		         e->left, k->px - e->top);
+	return e->adv;
 }
 SDL_Surface *kawa_text_render(struct kawa_font *k, const char *text, int width, Uint32 color) {
 	if (!k || !text || !text[0]) return NULL;
@@ -91,14 +165,8 @@ SDL_Surface *kawa_text_render(struct kawa_font *k, const char *text, int width, 
 		int x = 0, y = (int)li * lh;
 		while (q < ln[li].e) {
 			unsigned cp = next_cp(&q);
-			if (cp == ' ' || cp == '　') { x += (int)glyph_advance(k, cp); continue; }
-			FT_UInt gi = FT_Get_Char_Index(k->face, cp);
-			if (!gi) continue;
-			if (FT_Load_Glyph(k->face, gi, FT_LOAD_RENDER)) continue;
-			FT_Bitmap *bm = &k->face->glyph->bitmap;
-			blend_px(px, s->pitch, x, y, bm->width, bm->rows, bm->buffer, color,
-			         k->face->glyph->bitmap_left, k->px - k->face->glyph->bitmap_top);
-			x += (int)(k->face->glyph->advance.x >> 6);
+			if (cp == ' ' || cp == 0x3000) { x += (int)glyph_advance(k, cp); continue; }
+			x += glyph_draw(k, cp, x, y, px, s->pitch, color);
 		}
 	}
 	return s;

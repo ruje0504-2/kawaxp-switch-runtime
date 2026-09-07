@@ -192,14 +192,12 @@ static void util(mes_parameter_list p) {
  case 24: // persistent animation/audio slot bookkeeping, 0x43d3e0
   if(a==0||a==1||a==2||a==3||a==4||a==5||a==6||a==7) { /* frontend state keeps loaded assets; animation slots added separately */ }
   else fail("Util24 mode %u",a);break;
- case 34:frontend_quake(a);break; // screen quake: 0=stop, 1..=start (AI.exe util 34)
- case 35: /* AI.exe util35 = masked scene transition (wipe mask %02u.msk, idx=arg0):
-           * reveals the staged scene layer (surface 1) onto the display (surface 0).
-           * arg0 is a MASK INDEX 0..15, NOT a surface number: the old mapping copied
-           * "surface N", pasting boot menu parts (5=selparts, 6=mwaku) or empty layers
-           * (4/7/15) over scenes. Surface 1 is the authoritative source. */
-  {extern void frontend_msk_note(unsigned);frontend_msk_note(a);
-   copy_rect(0,0,639,479,1,0,0,0,false);}
+ case 34:frontend_quake(a);break;
+ case 35: /* AI.exe util35 = masked scene transition (mask idx=arg0): reveal the new
+           * frame staged on surface 1 over the current display (surface 0), phased per
+           * the %02u.msk reveal values; VM pauses ~0.6s while it plays (smoke: instant). */
+  {extern bool frontend_xfade_start(unsigned);
+   if(frontend_xfade_start(a)){st.waiting=3;st.sys[255]=SDL_GetTicks()+300;}}
   break;
  case 36:case 39:case 47:case 49:break; // Win32 menu/auto-mode controls
  case 37: { // engine title menu (0x43eb2c). START.MES dispatch reads var32[18]:
