@@ -1,0 +1,15 @@
+# build artifacts
+*.nro
+*.elf
+
+# verification screenshots/logs under reports/ (contain game visuals); keep the build note
+reports/*
+!reports/BUILD-0.3.0.md
+
+# runtime saves / local logs
+*.kws
+*.log
+
+# macOS
+.DS_Store
+subprojects/.wraplock
