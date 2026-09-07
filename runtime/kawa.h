@@ -46,6 +46,7 @@ void copy_rect(int sx,int sy,int ex,int ey,unsigned src,int dx,int dy,unsigned d
 void fill_rect(int x,int y,int ex,int ey,unsigned dst,uint32_t color);
 void frontend_present(void);
 void frontend_text(const char *text);
+void frontend_quake(unsigned level); /* 0=stop, >0=start screen shake at that level */
 void set_choices(const char **items,unsigned count,int kind);
 void audio_load(int ch,const char *name);
 void audio_play(int ch,bool loop);

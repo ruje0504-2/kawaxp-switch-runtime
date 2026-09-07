@@ -172,6 +172,16 @@ static void assign_values(unsigned op,unsigned index,mes_expression_list vals) {
 }
 static void util(mes_parameter_list p) {
  unsigned n=par(p,0),a=par(p,1);
+ if(getenv("KAWA_UTILTRACE")){
+  char line[256];size_t o=0;o+=snprintf(line+o,sizeof(line)-o,"UTIL %u args=%zu",n,vector_length(p));
+  for(unsigned i=1;i<vector_length(p)&&i<7;i++){
+   struct mes_parameter *q=&vector_A(p,i);
+   if(q->type==MES_PARAM_STRING)o+=snprintf(line+o,sizeof(line)-o," \"%s\"",q->str);
+   else if(q->expr)o+=snprintf(line+o,sizeof(line)-o," %u",ev(q->expr));
+   else o+=snprintf(line+o,sizeof(line)-o," ?");
+  }
+  note("%s",line);
+ }
  switch(n) {
  case 1:st.text[0]=0;break; // 0x4391d0: prepare message window
  case 2:if(!a)st.text[0]=0;break;
@@ -182,7 +192,7 @@ static void util(mes_parameter_list p) {
  case 24: // persistent animation/audio slot bookkeeping, 0x43d3e0
   if(a==0||a==1||a==2||a==3||a==4||a==5||a==6||a==7) { /* frontend state keeps loaded assets; animation slots added separately */ }
   else fail("Util24 mode %u",a);break;
- case 34:if(a) {unsupported++;note("APPROX quake %u",a);}break;
+ case 34:frontend_quake(a);break; // screen quake: 0=stop, 1..=start (AI.exe util 34)
  case 35:copy_rect(0,0,639,479,a,0,0,par(p,2),false);break;
  case 36:case 39:case 47:case 49:break; // Win32 menu/auto-mode controls
  case 37: { // engine title menu (0x43eb2c). START.MES dispatch reads var32[18]:
@@ -228,7 +238,12 @@ static void util(mes_parameter_list p) {
   items[c]="タイトルへ";menu_nums[c]=0;c++;
   menu_nums[c]=0;choice_kind=44;set_choices(items,c,2);st.waiting=2;break; }
  case 45:st.var[18]=1+(rand()&1);break;
- case 46:case 48:st.waiting=1;break;
+ case 46:st.waiting=1;break; // page-hold until advance (CG album etc.)
+ case 48: { // timed wait, arg = 1/20 s ticks (credits pacing: 4000/20 etc.)
+  unsigned ticks=par(p,1);
+  if(ticks){st.waiting=3;st.sys[255]=SDL_GetTicks()+ticks*AX_TICK_MS;}
+  else st.waiting=1;
+  break; }
  default:fail("Unimplemented Util %u",n);break;
  }
 }

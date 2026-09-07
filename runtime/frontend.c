@@ -23,6 +23,20 @@ static int smoke_messages=30;
 static const char *screenshot;
 static char status[256];static Uint32 status_until;
 struct ax_player animation;
+/* Util 34 screen quake: level>0 enables a subtle tremor until quake(0). */
+static int quake_level;static Uint32 quake_start;
+void frontend_quake(unsigned level) { quake_level=(int)level; if(level) quake_start=SDL_GetTicks(); if(getenv("KAWA_QUAKE")&&!level)quake_level=1; }
+static void quake_offset(Uint32 now,int *ox,int *oy) {
+ *ox=0;*oy=0;
+ if(!quake_level)return;
+ unsigned t=(unsigned)(now-quake_start);
+ if(t>3000)return; /* self-limiting in case a scene never calls quake(0) */
+ /* ~7 Hz rumble with pseudo-random jitter, ±level*3 px (clamped to 5) */
+ int amp=quake_level*3;if(amp>5)amp=5;
+ int ph=(int)(t/7);
+ *ox=((ph*1103515245u+12345u)>>16)%(amp*2+1)-amp;
+ *oy=(((ph+31)*1103515245u+12345u)>>16)%(amp*2+1)-amp;
+}
 static bool ensure_surface(unsigned i,int w,int h) {
  if(i>=NSURF||w>4096||h>4096||w<0||h<0){fail("Invalid surface %u %dx%d",i,w,h);return false;}
  if(w<640)w=640;if(h<480)h=480;
@@ -109,8 +123,7 @@ static void text_at(const char *text,int x,int y,uint32_t color,int width) {
 }
 void frontend_present(void) {
  if(!canvas)return;
- SDL_FillRect(canvas,NULL,rgb(canvas,0));
- if(surfaces[0]){SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[0],&r,canvas,NULL);}
+ SDL_FillRect(canvas,NULL,rgb(canvas,0)); if(surfaces[0]){SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[0],&r,canvas,NULL);}
  if(st.text[0]) {
   SDL_Rect bg={12,370,616,106};SDL_FillRect(canvas,&bg,rgb(canvas,0x101923));
   text_at(st.text,28,380,st.color,588);
@@ -126,7 +139,9 @@ void frontend_present(void) {
   text_at(error_text,14,44,0xffffff,610);
  }
  if(status_until>SDL_GetTicks()){SDL_Rect r={0,0,640,34};SDL_FillRect(canvas,&r,rgb(canvas,0x12212d));text_at(status,12,4,0xffffff,610);}
- SDL_UpdateTexture(texture,NULL,canvas->pixels,canvas->pitch);SDL_RenderClear(renderer);SDL_RenderCopy(renderer,texture,NULL,NULL);SDL_RenderPresent(renderer);
+ SDL_UpdateTexture(texture,NULL,canvas->pixels,canvas->pitch);
+ int qx=0,qy=0;quake_offset(SDL_GetTicks(),&qx,&qy);
+ SDL_RenderClear(renderer);{SDL_Rect dst={qx,qy,640,480};SDL_RenderCopy(renderer,texture,NULL,qx||qy?&dst:NULL);}SDL_RenderPresent(renderer);
 }
 static void notify_status(const char *s) {snprintf(status,sizeof(status),"%s",s);status_until=SDL_GetTicks()+2500;}
 static bool valid_loc(struct loc *p) {return memchr(p->script,0,32)&&p->addr<16*1024*1024;}

@@ -2,6 +2,16 @@
 
 ## 最新进展（优先阅读）
 
+**2026-09-08 第三轮：震屏(Util 34) + 定时等待(Util 48) 实现；MSK 调研结论**
+- Util 34 = 屏幕震动：参数全脚本仅 {0,1}，1 开启/0 停止。实现 frontend.c `frontend_quake()`：
+  合成时 ±(3..5)px 伪随机偏移，3 秒自限防忘关。真结局线 RESULT unsupported 由 59 → **0**。
+- Util 46/48 拆分：46=点击推进（CG 相册），48=定时等待（参数=1/20s ticks；CREDITS 25 处换页节奏）。
+  CREDITS 非交互实测：end_staff00..12 每页 ~3s 自动推进 → 跳回 start.mes ✓。
+- MSK：sequence.ARC 16 个 .msk = 640×480×1 逐像素「切换时刻」图（对角线/百叶窗/棋盘 wipe 素材）。
+  AI.exe 仅在 0x439b75/0x43a0b5 两处 sprintf("%02u.msk")（vtable 间接调用的 wipe 合成器），
+  **全部 90 个 MES 无任何 .msk/转场 util 引用** → 可达剧情不触发 msk wipe，暂不实现（详见 ../work/msk-note.md）。
+- 运行时 util trace 旋钮 KAWA_UTILTRACE；震屏测试旋钮 KAWA_QUAKE=1。
+
 **2026-09-08 深夜：EVENT 真结局线全自动打通（OVER18-HappyEnd3，var4[147]=1）**
 - 修复 vm_choose 序号漏洞：var32[18] 原写「显示索引+1」，原引擎写「case 声明序号」
   （被条件隐藏的 case 也占位）。s14:16b5（case 顺序 俊介[cond 105==1]/音の部屋[cond 105==0]/眠る）
