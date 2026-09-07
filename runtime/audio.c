@@ -51,7 +51,7 @@ static long switch_decode(const unsigned char *data,size_t size,float **out,int 
   if(!r){ov_clear(&vf);return -1;}
   float **pbuf;int bs;long got=0;int errs=0;
   /* ov_pcm_total can UNDERSTATE the real sample count (last-page granule
-   * rounding; S083.OGG actually decodes +784 frames past it), so read to true
+   * rounding; S083.OGG actually decodes +10000 frames past it), so read to true
    * EOF and grow the buffer instead of trusting `total` as an upper bound. */
   for(;;){long rd=ov_read_float(&vf,&pbuf,4096,&bs);
    if(rd==0)break;
