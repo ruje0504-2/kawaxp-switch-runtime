@@ -26,6 +26,17 @@ struct ax_player animation;
 /* Util 34 screen quake: level>0 enables a subtle tremor until quake(0). */
 static int quake_level;static Uint32 quake_start;
 void frontend_quake(unsigned level) { quake_level=(int)level; if(level) quake_start=SDL_GetTicks(); if(getenv("KAWA_QUAKE")&&!level)quake_level=1; }
+/* Util 35 transition masks (%02u.msk, 640x480 raw 8-bit): validated here; the real
+ * timed wipe (old page -> staged surface 1 with per-pixel mask reveal) is pending a
+ * page-model cross-check against the original, see work/msk-note.md. */
+static bool msk_valid[16];
+void frontend_msk_note(unsigned idx) {
+ if(idx>=16||msk_valid[idx])return;
+ char name[16];snprintf(name,sizeof(name),"%02u.msk",idx);
+ struct archive_data *d=seq_arc?archive_get(seq_arc,name):NULL;
+ if(d){msk_valid[idx]=d->size>=307200;archive_data_release(d);}
+ if(getenv("KAWA_MSKTRACE"))note("MSK %s %s",name,msk_valid[idx]?"ok":"missing");
+}
 static void quake_offset(Uint32 now,int *ox,int *oy) {
  *ox=0;*oy=0;
  if(!quake_level)return;
@@ -308,7 +319,7 @@ int main(int argc,char **argv) {
   }
   for(unsigned i=0;i<300&&!st.waiting;i++)vm_step();
   frontend_present();frames++;
-  if(smoke&&(st.waiting==99||st.waiting==98||frames>frames_cap))break;
+  if((smoke&&(st.waiting==99||st.waiting==98||frames>frames_cap))||(!smoke&&getenv("KAWA_FRAMES")&&frames>frames_cap))break;
   if(smoke)SDL_Delay(1);else if(SDL_GetTicks()-last<10)SDL_Delay(10-(SDL_GetTicks()-last));last=SDL_GetTicks();
  }
  frontend_present();if(screenshot)SDL_SaveBMP(canvas,screenshot);
