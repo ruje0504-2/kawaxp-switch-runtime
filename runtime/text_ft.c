@@ -43,7 +43,8 @@ static struct gly_ent *gly_find_slot(uint32_t cp) {
 	gly_cache_clear();
 	return gly_cache;
 }
-static void blend_px(unsigned char *px, int stride, int x, int y, int w, int h,
+static void blend_px(unsigned char *px, int stride, int sw, int sh,
+                     int x, int y, int w, int h,
                      const unsigned char *src, int srcpitch, Uint32 color, int xo, int yo) {
 	unsigned cr = color & 255, cg = (color >> 8) & 255, cb = (color >> 16) & 255;
 	for (int j = 0; j < h; j++) {
@@ -52,7 +53,7 @@ static void blend_px(unsigned char *px, int stride, int x, int y, int w, int h,
 			unsigned a = sr[i];
 			if (!a) continue;
 			int dx = x + xo + i, dy = y + yo + j;
-			if (dx < 0 || dy < 0) continue;
+			if (dx < 0 || dy < 0 || dx >= sw || dy >= sh) continue;
 			unsigned char *p = px + (size_t)dy * stride + (size_t)dx * 4;
 			unsigned ia = 255 - a;
 			p[0] = (unsigned char)((cr * a + p[0] * ia) / 255);
@@ -96,7 +97,7 @@ static unsigned glyph_advance(struct kawa_font *k, unsigned cp) {
 }
 /* rasterise once per glyph and blend it; returns the advance consumed */
 static int glyph_draw(struct kawa_font *k, unsigned cp, int x, int y,
-                      unsigned char *px, int stride, Uint32 color) {
+                      unsigned char *px, int stride, int sw, int sh, Uint32 color) {
 	struct gly_ent *e = gly_find_slot(cp);
 	if (!e) return 0;
 	if (!e->metric) {
@@ -124,7 +125,7 @@ static int glyph_draw(struct kawa_font *k, unsigned cp, int x, int y,
 		e->ready = 1;
 	}
 	if (e->bmp && e->w && e->h)
-		blend_px(px, stride, x, y, e->w, e->h, e->bmp, e->w, color,
+		blend_px(px, stride, sw, sh, x, y, e->w, e->h, e->bmp, e->w, color,
 		         e->left, k->px - e->top);
 	return e->adv;
 }
@@ -166,7 +167,7 @@ SDL_Surface *kawa_text_render(struct kawa_font *k, const char *text, int width, 
 		while (q < ln[li].e) {
 			unsigned cp = next_cp(&q);
 			if (cp == ' ' || cp == 0x3000) { x += (int)glyph_advance(k, cp); continue; }
-			x += glyph_draw(k, cp, x, y, px, s->pitch, color);
+			x += glyph_draw(k, cp, x, y, px, s->pitch, s->w, s->h, color);
 		}
 	}
 	return s;

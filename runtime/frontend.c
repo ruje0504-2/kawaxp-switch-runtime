@@ -26,6 +26,10 @@ static int smoke_messages=30;
 static const char *screenshot;
 static char status[256];static Uint32 status_until;
 static bool ff_hold; /* fast-forward while controller X / keyboard x held (not in smoke) */
+/* Debug bisect switches: enabled by a flag file in data_dir (no env on Switch). */
+static bool flag_on(const char*n){char p[1200];snprintf(p,sizeof(p),"%s/%s",data_dir,n);FILE*f=fopen(p,"rb");if(!f)return false;fclose(f);return true;}
+static int dbg_noax,dbg_notext;
+int dbg_noaudio,dbg_audiosync; /* bisect: see audio.c */
 static bool hide_msg;
 static bool gfx_dirty=true;
 void frontend_refresh(void){gfx_dirty=true;}
@@ -210,7 +214,7 @@ void animation_update(unsigned elapsed_ms) {
  animation.phase_ms+=elapsed_ms;
  while(animation.phase_ms>=AX_TICK_MS) {
   animation.phase_ms-=AX_TICK_MS;
-  if(!ax_tick(&animation,animation_draw,NULL)){fail("Malformed AX program in %s",animation.name);break;}
+  if(!dbg_noax)if(!ax_tick(&animation,animation_draw,NULL)){fail("Malformed AX program in %s",animation.name);break;}
  }
  if(st.waiting==4&&!ax_waiting(&animation))st.waiting=0;
 }
@@ -390,7 +394,7 @@ void frontend_present(void) {
     text_at(labels[start+j],28,y+2,sel?0xffe9a0:0xffffff,584);
    }
   } else {
-   int tw=600,th=0;SDL_Surface*ms=msg_surface(&tw,&th);
+   int tw=600,th=0;SDL_Surface*ms=dbg_notext?NULL:msg_surface(&tw,&th);
    if(ms){SDL_Rect to={28,392,0,0};SDL_BlitSurface(ms,NULL,canvas,&to);}
   }
  }
@@ -463,7 +467,10 @@ int save_state(unsigned slot) {
  }
  if(ok)ok=gzwrite(f,&animation,sizeof(animation))==sizeof(animation);
  if(gzclose(f)!=Z_OK)ok=false;
- if(ok&&rename(tmp,path))ok=false;
+ /* rename() refuses to replace an existing file on Switch fsdev/FAT and
+   * Windows, so overwriting an older save failed: delete the old save and
+   * retry once when the plain rename is rejected. */
+  if(ok&&rename(tmp,path)){remove(path);ok=rename(tmp,path)==0;}
  if(!ok)remove(tmp);
  char msg[64];snprintf(msg,sizeof(msg),ok?"Saved slot %u":"Save failed (slot %u)",slot);
  notify_status(msg);note("SAVE %s %s",ok?"OK":"FAIL",path);return ok;
@@ -551,11 +558,14 @@ int main(int argc,char **argv) {
  if(!save_dir[0])snprintf(save_dir,sizeof(save_dir),"%s/kawaxp-saves",data_dir);
  if(mkdir(save_dir,0755)&&errno!=EEXIST){fprintf(stderr,"Cannot create save directory %s\n",save_dir);return 1;}
  char fontbuf[1200];if(!fontpath){snprintf(fontbuf,sizeof(fontbuf),"%s/Kosugi-Regular.ttf",data_dir);fontpath=fontbuf;}
+ dbg_noax=flag_on("noax.flag");dbg_notext=flag_on("notext.flag");
+ dbg_noaudio=flag_on("noaudio.flag");dbg_audiosync=flag_on("audiosync.flag");
  #ifdef __SWITCH__
   /* redirect diagnostics to a log file on the SD card (read after run) */
   {char lp[1200];snprintf(lp,sizeof(lp),"%s/kawaxp.log",save_dir);
    FILE*lf=fopen(lp,"w");if(lf){dup2(fileno(lf),2);setvbuf(stderr,NULL,_IOLBF,0);}
-   fprintf(stderr,"KAWAXP log start %s\n",lp);}
+   fprintf(stderr,"KAWAXP log start %s\n",lp);
+   fprintf(stderr,"DBG noax=%d notext=%d noaudio=%d audiosync=%d\n",dbg_noax,dbg_notext,dbg_noaudio,dbg_audiosync);}
 #endif
 if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER)||kawa_text_init()){fprintf(stderr,"SDL: %s\n",SDL_GetError());return 1;}
 #ifdef __SWITCH__

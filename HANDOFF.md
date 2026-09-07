@@ -1,6 +1,153 @@
 # KAWAXP 交接：AX 已接入（2026-09-08 更新）
 
+## 🎯 给 Codex 的当前任务清单（优先做）
+
+### 0. Switch 固定闪退 — 根因已定位并修复（2026-09-08 本会话，已验证）
+- **根因**：audio.c `switch_decode()` Ogg 分支按 `ov_pcm_total` 一次性 malloc、再按 4096 帧块循环读；
+  voice.ARC 中 **25 个文件**的 pcm_total 低估实际可解帧数（+144 ~ +192272 帧；S083.OGG total=76744 实际 86744）。
+  末块跨写越过 malloc 边界 → 堆损坏 → **固定地点崩溃**（S083 = s26 那句；其余 24 个 = 其它"固定闪退点"）。
+  成因：原版语音文件尾部有静音 padding（0.6s 后 -180dB）且第 4 页起每页都错误置 EOS，导致 total 与真实流长不符。
+  mac 不崩 = libsndfile 路径不同（host_decode），且它会停在首个 EOS 页（S083 只读 25304 帧=0.57s 人声部分，恰好正确）。
+- **修复**：switch_decode 改为**读至 EOF + realloc 按需扩容**（不再信任 pcm_total 为上界），并加 channels 1..8 校验。
+- **验证**：host ASan 复现程序（work/dbg_dec.c，镜像 switch_decode）全库扫描 voice.ARC 2170 个 ogg **零越界**；
+  双端编译干净，NRO MD5 `4db39364`；host smoke + 存档往返 PASS。
+- noax/notext/noaudio/audiosync flag 开关与日志开头 DBG 行保留（诊断用，不影响正常游玩）。
+- 遗留观察（待办，不急）：mac host_decode 遇多 EOS 页文件只读首个 EOS 之前内容（S083=0.57s）——与 Switch 现行为(全文件)不一致，仅影响那 25 个文件的尾部静音长度，听感无差，暂不改。
+
+### 1. 引擎存档覆盖修复（2026-09-08，已改）
+- noax.flag/notext.flag 双开关实测**都仍崩** → 排除 AX 绘制与文本渲染路径。
+- 最大嫌疑 = **Switch 异步音频解码 worker 线程**（audio.c adec_*）：mac 同步解码不崩，正好吻合"仅 Switch 特有"；
+  崩点前日志 `AUDIO LOAD ch=4 s083.ogg` 后无 OK=，即崩溃发生在语音解码进行中。
+- 新增 flag 开关（data_dir 下空文件）：`noaudio.flag`（完全不解码）、`audiosync.flag`（退同步解码、不起 worker）；
+  日志开头新增 `DBG noax=.. notext=.. noaudio=.. audiosync=..` 行以确认开关生效。
+- NRO MD5 `8e9d9414`（本会话最后）。等用户实机回报两开关结果后，再定位
+  （若 noaudio 生效→查 worker 线程；若 audiosync 生效→查 vorbis/archive 读路径；两开关无效→查 present 其余路径）。
+
+### 1. 引擎存档覆盖修复（2026-09-08，已改）
+- **现象**：先生成的存档之后无法覆盖（SAVE FAIL）。原因：`save_state` 写临时文件后
+  `rename(tmp,path)` 在 Switch fsdev/FAT（及 Windows）上遇已存在目标会失败。
+- **修复**：frontend.c `save_state` —— rename 失败时先 `remove(path)` 再重试一次（原子性让步，旧档删除属预期）。
+- 双端已编译，NRO MD5 `9af44d75`，host smoke 30 + SAVE ROUNDTRIP PASS。请 Codex 侧同步 frontend.c 并保持同 MD5。
+- 待用户实机验证：同一槽位连续覆盖两次（第一次新建、第二次覆盖）均应显示 Saved。
+
+### 1. 像素级 UI 还原（核心）— 详见 TASKS-TITLE-UI-CODEX.md
+标题菜单已按原版反汇编坐标改为部件图合成（见下）；读档/声音测试/结局/场景/相册/槽位仍是**中央纯文字列表占位**，需继续还原：
+- 对照原版实机/截图确定各菜单项的**屏幕坐标与样式**；
+- 用已解码部件图合成：menu.bmp(840×372 面板)、sl_pt.bmp(656×464 槽位面板)、
+  setting.bmp(592×1096)、selparts.bmp(高亮条)、mwaku.bmp(消息窗)（PNG 在 work/cgout/）；
+- 标题项已确认来自 title_pt.gcc，按钮 408×36、位置 (116,244+36×行号)，Logo (28,108)。
+- ⚠️ **剧情分支(kind2)选项已是"底部消息窗内纯文字、无框"**（用户实机确认原版如此）——
+  消息窗相关样式按此方向，勿再画中央框或给分支选项加 selparts 条。
+
+### 2. quake/util35 特效精确还原 — 详见 TASK-QUAKE-UTIL34-CODEX.md
+先核验原版像素模型，**不要直接按旧任务单实现 8bit 调色板**：新增逆向证据见 reports/title-ui-20260908.md。
+引擎页模型([obj+0x80/84/88])；反汇编循环已给
+(0x435c10 / 0x43a0b5)，建议逐行仿真后实机校准。⚠️ 补充：**util8**
+(pixel_palette_crossfade 区域渐变，s10/s12 真实触发) 同属此类近似，请一并核验。
+
+### 3. Switch 实机回归 — 用户确认已完成
+用户在本轮明确回复“3已经完成”：257eedf / NRO MD5 6a32fcb1 基线的 AX 眼睛动画、
+backlog、触屏、分支选项实机回归记为完成。这项确认不自动覆盖之后新增的标题 UI / 命中区改动。
+
+### 4. PC 存档兼容 — 已封存待样本（TASKS-PC-SAVE-COMPAT.md）
+骨架逆向已留档（SaveData = 30×0x40E 记录等），需真实游玩存档才能继续；当前暂停。
+
+---
+
 ## 最新进展（优先阅读）
+
+**2026-09-08 Codex：原版标题部件图接入，用户确认基线实机回归完成**
+- 基线 NRO MD5 核对为 `6a32fcb1b106582fd7570f559a5d6072`；修改前备份在 `work/harness-257eedf/`。
+- 标题 Logo 与正常/高亮按钮使用 `title_pt.gcc` 原图，不再用字体重绘。
+  静态坐标、菜单顺序与解锁条件来自 `44b3a0` / `447430`，不是估算截图。
+- 原版顺序：开始、读档（有存档）、声音、相册（flag200..319 有 1）、场景（flag400..439 有 1）、结局（flag152）。
+  KWS 存档也可启用读档。`KAWA_MENU37` 仍按可见索引选择，旧额外菜单索引需随该顺序调整。
+- 点击区域对应当前菜单；忽略触摸生成的重复鼠标点击和选项外点击。剧情分支仍为底部消息窗内纯文字无框。
+- 新增 `KAWA_ENGINESHOT=37` 截标题测试钩子；截图 `work/title-original-parts.png`。
+- 本轮未改 quake/util35/util8 的运行行为；已确认 util35 的 +0x44 是独立 alpha 平面，三字节颜色步长不能解释为索引页。
+- 标题开场灰 Logo 渐变/按压过渡、其他引擎菜单与精确特效仍待继续；详见 `reports/title-ui-20260908.md`。
+
+**2026-09-08 第五轮补充2：分支选项改为底部消息窗内纯文字（无框）**
+- 用户实机确认原版分支选项**就在字幕(消息窗)位置、用同一 mwaku 背景、只有文字无框**。
+- 改动：kind2 剧情分支现于底部消息窗内按行列出纯文字（选中行金色、其余白），
+  行高随选项数自适应(14-26px)；**移除 selparts 紫框**（此前误用为屏幕中央大列表）。
+- 引擎菜单(util37 标题/38 读档/41-44)仍为中央纯文字列表占位（像素面板待 Codex）。
+- host 像素验证：两行选项文字在窗内(y~402/428)渲染、窗下半透明露出 CG、无紫框残留。
+- NRO：outputs/KAWAXP-port/kawaxp.nro（MD5 6a32fcb1…），已同步 switch-package 与 Codex 镜像。
+
+**2026-09-08 第五轮补充：分支选择菜单换用原版 selparts 高亮条**（已废弃，见上）
+- 用户指出分支选项是自绘黑块。已改为**原版部件图**：surfaces[5] 的 selparts.bmp
+  （320×68 = 上下两帧 320×32 圆角高亮条，紫描边+镂空文字区）做每项背景，
+  选中项用第 2 帧(y35-66)+金色文字，其余第 1 帧(y1-32)+白字；居中于 (640-320)/2，
+  起点 y=120、每项 34px。新增 blit_keyed()（跳过 AI5 绿/品红键控色）。
+- 鼠标/触摸命中区同步 (y-120)/34。host 截图验证框+文字已上屏（work/menu-selparts.bmp）。
+- 工具：KAWA_MENUSHOT=<n> 在 smoke 第 n 个 kind2 菜单截图（仍可用）。
+- **待 Codex 像素校准**：条目横排起点/间距、选中帧是否确为 frame2、文字基线、是否需
+  标题条/页眉——仍属 TASKS-TITLE-UI-CODEX 像素对照范围。截图 work/menu-selparts.bmp。
+- NRO：outputs/KAWAXP-port/kawaxp.nro（MD5 417ae164…），switch-package 与 Codex 镜像已同步。
+
+**2026-09-08 第五轮：文字履历(backlog) + Switch 触屏 + crossfade 核查**
+- **文字履历**：记录每条已显示对白（环形 256 条），全屏回看视图。**打开/关闭 = 十字键上
+  短按**（对白暂停时按上打开；历史内上键翻向旧行、翻到最旧再按上关闭；下键翻回新行）。
+  键盘 h/y 开关、上下滚动、B/回车关闭；手柄 − 键(Select)开关；触摸点按关闭。回看期间
+  禁用快进。标题栏"文字履歴"。
+- **Switch 触屏**：SDL_FINGERDOWN 归一化坐标→640×480；普通对话点按=推进，选择菜单
+  点按选项=选中+确认，历史中点按=关闭。
+- **crossfade 核查结论**：0x2b/0x2c 语句（CROSSFADE/CROSSFADE2）在全部 90 脚本 **0 出现**
+  （全脚本扫描 65801 语句），unsupported 分支不可达（实测多路线 unsupported=0）。
+  mes-dump 里的 "pixel_palette_crossfade" 实为 **util 8**（区域像素渐变，参数 x,y,w,h），
+  已有近似实现(case8 masked copy)，s10/s12 实测触发但无错；视觉精确性列入 quake/util35
+  同族 Codex 像素核验范围（TASK-QUAKE 单内补充说明）。
+- 测试钩子：KAWA_HISTTEST=<msg>（smoke 到该条时截历史屏并退出，验证渲染）。
+- NRO：outputs/KAWAXP-port/kawaxp.nro（MD5 38d261be…），switch-package 与 Codex 镜像已同步。
+- **待实机确认**：手柄十字键上开/关履历手感、触摸命中区。
+
+**2026-09-08 备案：PC 存档兼容 → 已封存，待真实存档样本再续**
+- 详见 **TASKS-PC-SAVE-COMPAT.md**（两个工作区均有）。方向=PC 原版存档→Switch 续玩。
+- 骨架逆向已完成并留档：SaveData%04d = 30×0x40E 记录 + 尾部 4B；每条记录 = 一个已加载
+  资源/场景登记项（rec0=CG "001b.gcc"、rec1=BGM "yokan.wav" 已从空壳破译）；flag%04d(0x10F0B)
+  为另一套。I/O/管理类/记录集合架构代码路径已全部定位。
+- **暂停原因**：本地样本（SaveData0001-40、flag0024-50）全是出厂空壳，无真实剧情进度；
+  字段语义（type 全集/坐标/句柄/AX 状态）无法回验。待用户提供一份 PC 真实游玩存档再续。
+- 本引擎自身存档（KWS v1/v2、40 槽、F5/F9、roundtrip 测试）**早已实现**，不受影响。
+
+**2026-09-08 第四轮补充：FRAME 诊断日志默认关闭**
+- 实机复测流畅度已达标（多核改造生效），用户要求关闭周期 FRAME 日志。
+- 改动：frontend.c 的 FRAME avg/max 行改为默认不打印，仅设 **KAWA_FRAMELOG=1** 时输出
+  （保留 frames 计数，KAWA_FRAMES 截图上限/smoke 帧数不受影响）。
+- NRO：outputs/KAWAXP-port/kawaxp.nro（MD5 26527296…），switch-package 与 Codex 镜像已同步。
+
+**2026-09-08 第四轮：多核优化（主线程绑核 + 音频解码工作线程 + 字形缓存）**
+- 起因：Switch 实机观测到**引擎纯单线程挤在一个核**（游戏所在核满载、HOS 占少量、
+  #1/#2 几乎全空）；FRAME 日志每个换行处 max=140-324ms（语音整段解码+消息文字整行
+  FreeType 双次栅格化同步阻塞在 VM 线程），demo 段 avg 69-109ms。
+- 改动（runtime/）：
+  1. **主线程绑核**（frontend.c，__SWITCH__）：默认 prefer core 1、可迁移
+     （KAWA_CORE_MAIN=<0..3> 强制单核）；启动日志新增 `CORE main pref=.. mask=.. cur=..`
+     可直接核对是否离开 HOS 核。
+  2. **音频解码工作线程**（audio.c，__SWITCH__）：语音/BGM/SE 整段解码从 VM 线程
+     移到钉在 core 2 的 worker（KAWA_CORE_AUDIO 可改；KAWA_AUDIOSYNC=1 回退同步）。
+     audio_load 只入队（每声道 latest-wins + 代次防过期安装），解码完成在设备锁内
+     装填；audio_play 若数据未就绪则记 want_play、解码落地即自动开播。锁序恒为
+     SDL 设备锁 → adec_mu，避免死锁。host 端行为不变（仍同步，sndfile 快）。
+  3. **FreeType 字形缓存**（text_ft.c）：按 codepoint 缓存灰度字形位图+度量，
+     阴影/彩色两 pass 共享，重复汉字不再反复 FT_LOAD_RENDER。逐像素等价性已用
+     host 单元测试验证（TEXT_CACHE_OK）。原版代码假设 FT pitch==width 的隐患
+     已顺带修正（按 pitch 逐行拷贝）。
+- 验证：host smoke 8/12/35 条消息 + 存档往返 PASS；双端 ninja 编译干净。
+- NRO：outputs/KAWAXP-port/kawaxp.nro（MD5 2d11875a…），switch-package 与 Codex 镜像已同步。
+- **待用户实机复测**：FRAME 行的 max 尖峰应大幅回落、demo 段 avg 应接近 16ms 级别；
+  日志首行附近会多 `CORE` 与 `AUDIO worker started on core N` 两行，可确认多核生效。
+
+**2026-09-08 交接：quake/mask 特效精确还原 → Codex**
+- 详见 **TASK-QUAKE-UTIL34-CODEX.md**（两工作区均有）。原版特效跑在 8bit 索引缓冲+调色板、
+  页模型未定；DeepSeek 已做多版 RGB 近似与完整反汇编证据整理，交付 Codex 实现并实机核验。
+- 用户最新观察（PC 流程视频）：quake 点为“灰底 + 类似烟雾的缓慢移动、前画面 0% 可见”。
+
+**2026-09-08 备案：标题/引擎菜单像素 UI → 移交 Codex 实现**
+- 前置调研完成（部件图已解码 PNG、流程/坐标线索、引擎分发地址），任务单见
+  **TASKS-TITLE-UI-CODEX.md**（两个工作区均有）。原因：像素级对照需目视原版，DeepSeek 模型无图像输入。
+- 本轮工具：KAWA_FRAMES 非 smoke 也生效（截图帧上限）。
 
 **2026-09-08 第三轮：震屏(Util 34) + 定时等待(Util 48) 实现；MSK 调研结论**
 - Util 34 = 屏幕震动：参数全脚本仅 {0,1}，1 开启/0 停止。实现 frontend.c `frontend_quake()`：

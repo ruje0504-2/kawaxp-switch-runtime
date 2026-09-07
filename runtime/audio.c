@@ -44,15 +44,26 @@ static long switch_decode(const unsigned char *data,size_t size,float **out,int 
  OggVorbis_File vf;struct smem mem={data,size,0};
  if(ov_open_callbacks(&mem,&vf,NULL,0,ogg_cb))return -1;
  vorbis_info *vi=ov_info(&vf,-1);if(!vi){ov_clear(&vf);return -1;}
- *ch=vi->channels;*rate=vi->rate;
+ *ch=vi->channels;*rate=vi->rate;  if(*ch<1||*ch>8){ov_clear(&vf);return -1;}
  long total=(long)ov_pcm_total(&vf,-1);if(total<0||total>44100*60*30){ov_clear(&vf);return -1;}
- float *r=malloc((size_t)total*(*ch)*4);
- float **pbuf;int bs;long got=0;
- while(got<total){long rd=ov_read_float(&vf,&pbuf,4096,&bs);
-  if(rd==0)break;if(rd<0)continue;
-  for(long k=0;k<rd;k++)for(int j=0;j<*ch;j++)r[(got+k)*(*ch)+j]=pbuf[j][k];
-  got+=rd;}
- ov_clear(&vf);*out=r;return got;
+  size_t alloc_frames=(size_t)total;
+  float *r=malloc(alloc_frames*(size_t)(*ch)*4);
+  if(!r){ov_clear(&vf);return -1;}
+  float **pbuf;int bs;long got=0;int errs=0;
+  /* ov_pcm_total can UNDERSTATE the real sample count (last-page granule
+   * rounding; S083.OGG actually decodes +784 frames past it), so read to true
+   * EOF and grow the buffer instead of trusting `total` as an upper bound. */
+  for(;;){long rd=ov_read_float(&vf,&pbuf,4096,&bs);
+   if(rd==0)break;
+   if(rd<0){if(++errs>200)break;continue;}
+   if((size_t)got+(size_t)rd>alloc_frames){
+    size_t nf=alloc_frames;while(nf<(size_t)got+(size_t)rd)nf*=2;
+    float *nr=realloc(r,nf*(size_t)(*ch)*4);
+    if(!nr){free(r);ov_clear(&vf);return -1;}
+    r=nr;alloc_frames=nf;}
+   for(long k=0;k<rd;k++)for(int j=0;j<*ch;j++)r[(got+k)*(*ch)+j]=pbuf[j][k];
+   got+=rd;}
+  ov_clear(&vf);*out=r;return got;
 }
 #else
 #include <sndfile.h>
@@ -211,14 +222,14 @@ void audio_init(void) {
  SDL_AudioSpec spec={.freq=44100,.format=AUDIO_F32SYS,.channels=2,.samples=1024,.callback=mix};
  device=SDL_OpenAudioDevice(NULL,0,&spec,NULL,0);if(device)SDL_PauseAudioDevice(device,0);else note("AUDIO unavailable %s",SDL_GetError());
 #ifdef __SWITCH__
- if(device&&!getenv("KAWA_AUDIOSYNC"))adec_start();
+ if(device&&!getenv("KAWA_AUDIOSYNC")&&!dbg_audiosync&&!dbg_noaudio)adec_start();
 #endif
 }
 void audio_stop(int ch){if(ch<0||ch>=5||!device)return;SDL_LockAudioDevice(device);channels[ch].playing=false;SDL_UnlockAudioDevice(device);}
 #ifdef __SWITCH__
 void audio_load(int ch,const char *name) {
  if(ch<0||ch>=5)return;
- note("AUDIO LOAD ch=%d %s",ch,name);if((smoke&&!audio_forced())||!device)return;
+ note("AUDIO LOAD ch=%d %s",ch,name);if(dbg_noaudio)return;if((smoke&&!audio_forced())||!device)return;
  if(!adec_run||getenv("KAWA_AUDIOSYNC")) {
   /* synchronous fallback: worker unavailable or KAWA_AUDIOSYNC=1 */
   audio_stop(ch);struct archive_data *d=NULL;
@@ -252,7 +263,7 @@ void audio_load(int ch,const char *name) {
  condvarWakeAll(&adec_cv);
 }
 void audio_play(int ch,bool loop){
- if(ch<0||ch>=5||!device)return;
+ if(ch<0||ch>=5||!device||dbg_noaudio)return;
  /* If a decode for this channel is still in flight, don't start the previous
   * clip; remember the request and start as soon as the new data lands. */
  mutexLock(&adec_mu);
@@ -265,7 +276,7 @@ void audio_play(int ch,bool loop){
 #else
 void audio_load(int ch,const char *name) {
  if(ch<0||ch>=5)return;
- note("AUDIO LOAD ch=%d %s",ch,name);if((smoke&&!audio_forced())||!device)return;
+ note("AUDIO LOAD ch=%d %s",ch,name);if(dbg_noaudio)return;if((smoke&&!audio_forced())||!device)return;
  audio_stop(ch);struct archive_data *d=NULL;
  if(ch==0||ch==4){if(arcs[ch])d=archive_get(arcs[ch],name);}
  else for(int i=1;i<4&&!d;i++)if(arcs[i]&&archive_get_index(arcs[i],name)>=0)d=archive_get(arcs[i],name);
@@ -285,7 +296,7 @@ void audio_load(int ch,const char *name) {
  SDL_UnlockAudioDevice(device);archive_data_release(d);
  note("AUDIO OK ch=%d frames=%lu loop=[%lu,%lu)",ch,(unsigned long)c->frames,(unsigned long)c->loop_start,(unsigned long)c->loop_end);
 }
-void audio_play(int ch,bool loop){if(ch<0||ch>=5||!device)return;SDL_LockAudioDevice(device);channels[ch].pos=0;channels[ch].loop=loop;channels[ch].playing=true;SDL_UnlockAudioDevice(device);}
+void audio_play(int ch,bool loop){if(ch<0||ch>=5||!device||dbg_noaudio)return;SDL_LockAudioDevice(device);channels[ch].pos=0;channels[ch].loop=loop;channels[ch].playing=true;SDL_UnlockAudioDevice(device);}
 #endif
 void audio_fini(void){
 #ifdef __SWITCH__

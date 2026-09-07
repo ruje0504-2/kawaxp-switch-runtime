@@ -33,6 +33,7 @@ extern char data_dir[1024],save_dir[1024];
 extern unsigned unsupported;
 void fail(const char *fmt,...);
 void note(const char *fmt,...);
+extern int dbg_noaudio,dbg_audiosync; /* audio bisect flag files (Switch) */
 void vm_start(const char *script);
 void vm_step(void);
 void vm_choose(unsigned i);
