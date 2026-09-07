@@ -38,6 +38,9 @@ void vm_step(void);
 void vm_choose(unsigned i);
 void vm_advance(void);
 extern unsigned vm_choice_kind(void);
+unsigned vm_menu_value(unsigned i);
+void vm_album_menu(void);
+void frontend_refresh(void);
 extern unsigned vm_last_menu_addr(void);
 extern void vm_slot_menu(bool save); /* engine save/load slot menu (keys/smoke) */
 uint32_t ev(struct mes_expression *e);

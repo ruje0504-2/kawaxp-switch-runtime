@@ -1,5 +1,6 @@
 /* GPL-2.0-or-later. KAWAXP AST interpreter; original program addresses in RE.md. */
 #include "kawa.h"
+#include "extras_ui.h"
 #include <stdarg.h>
 #include <string.h>
 #include <strings.h>
@@ -203,31 +204,36 @@ static void util(mes_parameter_list p) {
  case 37: { // engine title menu (0x43eb2c). START.MES dispatch reads var32[18]:
   //   1=はじめから 2=ロード 3=アルバム(allpic) 4=シーン(scene)
   //   5=サウンド(sound) 6=エンディング(ending)
-  // Extras 3..6 appear once any ending was seen (START.MES sets var4[152]).
-  static const char *titles[6]={"はじめから","ロード","アルバム","シーン","サウンド","エンディング"};
-  static const unsigned tno[6]={1,2,3,4,5,6};
-  unsigned c=st.flag[152]?6:2;const char *items[6];
-  for(unsigned k=0;k<c;k++){items[k]=titles[k];menu_nums[k]=tno[k];}
+  // Original order and unlock tests: AI.exe 44b3a0. Sound is always available.
+  static const char *titles[6]={"はじめから","ロード","サウンド","アルバム","シーン","エンディング"};
+  static const unsigned tno[6]={1,2,5,3,4,6};
+  bool enabled[6]={true,st.flag[1001]!=0,true,false,false,st.flag[152]!=0};
+  for(unsigned k=200;k<320;k++)if(st.flag[k]==1)enabled[3]=true;
+  for(unsigned k=400;k<440;k++)if(st.flag[k]==1)enabled[4]=true;
+  // KWS saves are independent of the original PC save-exists flag.
+  for(unsigned k=0;k<100&&!enabled[1];k++){
+   char path[1200];snprintf(path,sizeof(path),"%s/slot%u.kws",save_dir,k);
+   FILE *f=fopen(path,"rb");if(f){fclose(f);enabled[1]=true;}
+  }
+  unsigned c=0;const char *items[6];
+  for(unsigned k=0;k<6;k++)if(enabled[k]){items[c]=titles[k];menu_nums[c++]=tno[k];}
   menu_nums[c]=0;choice_kind=37;set_choices(items,c,2);st.waiting=2;break; }
  case 38: { // engine load screen (0x43eb78): list runtime slots that exist, then resume
   static char lbls[48][24];unsigned c=0;const char *items[48];
-  for(unsigned s=0;s<100;s++){char p[1200];
+  for(unsigned s=0;s<100&&c<47;s++){char p[1200];
    snprintf(p,sizeof(p),"%s/slot%u.kws",save_dir,s);
    FILE *f=fopen(p,"rb");if(!f)continue;fclose(f);
    snprintf(lbls[c],24,"スロット%02u",s);items[c]=lbls[c];menu_nums[c]=s;c++;}
   items[c]="戻る";menu_nums[c]=~0u;c++;
   menu_nums[c]=0;choice_kind=38;set_choices(items,c,2);st.waiting=2;break; }
  case 40:st.var[9]=0;st.waiting=1;break; // hold splash until advance (OVER3/16/18/SAMPLE)
- case 41: { // engine sound test (0x43eb88): pick a track -> preview, stays until 戻る
-  static const char *bw[16]={"dead","gemend","h1","h2","hall","hallf","inbi1","inbi2",
-                             "kyofu","last","misako","niwa2","or","yokan2","yokan3","yokan"};
-  static char lbl[17][24];unsigned c=0;const char *items[17];
-  for(unsigned k=0;k<16;k++){snprintf(lbl[c],24,"BGM%d %s",k+1,bw[k]);items[c]=lbl[c];menu_nums[c]=k+1;c++;}
-  items[c]="戻る";menu_nums[c]=~0u;c++;
-  menu_nums[c]=0;choice_kind=41;set_choices(items,c,2);st.waiting=2;break; }
+ case 41: {
+  const char *items[16];music_playing=-1;
+  for(unsigned k=0;k<16;k++){items[k]=k<14?music_files[k]:k==14?"停止":"タイトルに戻る";menu_nums[k]=k;}
+  choice_kind=41;set_choices(items,16,2);st.waiting=2;break; }
  case 42: { // ending replay select (0x43eb94): unlocked endings -> var32[18]=1..19, 戻る=0
   static char lbl[20][24];unsigned c=0;const char *items[20];
-  for(unsigned k=1;k<=19;k++){if(!st.flag[129+k])continue;snprintf(lbl[c],24,"エンディング%d",k);
+  for(unsigned k=1;k<=19;k++){snprintf(lbl[c],24,"エンディング%d",k);
    items[c]=lbl[c];menu_nums[c]=k;c++;}
   items[c]="戻る";menu_nums[c]=0;c++;
   menu_nums[c]=0;choice_kind=42;set_choices(items,c,2);st.waiting=2;break; }
@@ -236,12 +242,7 @@ static void util(mes_parameter_list p) {
   for(unsigned k=0;k<8;k++){snprintf(lbl[c],24,"シーン%d",k+1);items[c]=lbl[c];menu_nums[c]=k;c++;}
   items[c]="戻る";menu_nums[c]=8;c++;
   menu_nums[c]=0;choice_kind=43;set_choices(items,c,2);st.waiting=2;break; }
- case 44: { // CG album page select (0x43ec2c): offer pages whose seen flag var4[199+n] is set
-  static char lbl[101][24];unsigned c=0;const char *items[101];
-  for(unsigned k=1;k<=123&&c<99;k++){if(!st.flag[199+k])continue;snprintf(lbl[c],24,"CG %d",k);
-   items[c]=lbl[c];menu_nums[c]=k;c++;}
-  items[c]="タイトルへ";menu_nums[c]=0;c++;
-  menu_nums[c]=0;choice_kind=44;set_choices(items,c,2);st.waiting=2;break; }
+ case 44:vm_album_menu();break;
  case 45:st.var[18]=1+(rand()&1);break;
  case 46:st.waiting=1;break; // page-hold until advance (CG album etc.)
  case 48: { // timed wait, arg = 1/20 s ticks (credits pacing: 4000/20 etc.)
@@ -307,20 +308,15 @@ void vm_choose(unsigned i) {
   return;
  }
  if(choice_kind==41) { // sound test: preview chosen track, keep the menu open; 戻る exits
-  unsigned s=i<100?menu_nums[i]:~0u;
-  st.text[0]=0;
-  if(s==~0u){st.waiting=0;return;}
-  static const char *bw[16]={"dead","gemend","h1","h2","hall","hallf","inbi1","inbi2",
-                             "kyofu","last","misako","niwa2","or","yokan2","yokan3","yokan"};
-  static char lbl[17][24];unsigned c=0;const char *items[17];
-  for(unsigned k=0;k<16;k++){snprintf(lbl[c],24,"BGM%d %s",k+1,bw[k]);items[c]=lbl[c];menu_nums[c]=k+1;c++;}
-  items[c]="戻る";menu_nums[c]=~0u;c++;
-  menu_nums[c]=0;choice_kind=41;
-  char fn[64];snprintf(fn,sizeof(fn),"%s.wav",bw[s-1]);
-  audio_stop(0);audio_load(0,fn);audio_play(0,true);note("SOUNDTEST %s",fn);
-  set_choices(items,c,2);st.waiting=2;return;
+  unsigned s=i<16?menu_nums[i]:15;
+  if(!extras_enabled(41,s))return;
+  st.text[0]=0;audio_stop(0);music_playing=-1;
+  if(s==15){st.waiting=0;return;}
+  if(s<14){music_playing=(int)s;audio_load(0,music_files[s]);audio_play(0,true);note("SOUNDTEST %s",music_files[s]);}
+  frontend_refresh();st.waiting=2;return;
  }
  if(choice_kind==42) { // ending replay: var32[18]=ending no (0 = back to title via script tail)
+  if(!extras_enabled(42,menu_nums[i]))return;
   st.var[18]=i<100?menu_nums[i]:0;st.text[0]=0;st.waiting=0;return;
  }
  if(choice_kind==43) { // scene replay: var32[20]=0..7 event; 8+var18=0 = back
@@ -329,6 +325,10 @@ void vm_choose(unsigned i) {
  }
  if(choice_kind==44) { // CG album page select
   unsigned p=i<100?menu_nums[i]:0;
+  if(!extras_enabled(44,p))return;
+  if(p==EXTRA_PREV||p==EXTRA_NEXT){st.var[20]+=p==EXTRA_NEXT?1:-1;vm_album_menu();return;}
+  st.var[9]=p==EXTRA_PLAY?0:1;
+  if(p==EXTRA_PLAY){for(p=1;p<=123&&!extras_enabled(44,p);p++){}if(p>123)return;}
   note("CH44 i=%u p=%u",i,p);
   if(p==0){ // タイトルへ: script chain has no exit path; jump to title engine-side
    note("ALBUM EXIT to title");st.text[0]=0;st.waiting=0;jump("start.mes",0);return;
@@ -350,6 +350,17 @@ void vm_choose(unsigned i) {
  }}
 }
 unsigned vm_choice_kind(void) { return choice_kind; }
+void vm_album_menu(void){
+ static char labels[20][24];const char *items[20];unsigned c=0;
+ if(st.var[20]>7)st.var[20]=0;
+ unsigned first=st.var[20]*16+1,last=first+16;if(last>124)last=124;
+ for(unsigned v=first;v<last;v++){snprintf(labels[c],24,"CG %u",v);items[c]=labels[c];menu_nums[c++]=v;}
+ const unsigned controls[4]={EXTRA_PREV,EXTRA_NEXT,0,EXTRA_PLAY};
+ const char *names[4]={"前頁","次頁","タイトルに戻る","連続再生"};
+ for(unsigned k=0;k<4;k++){items[c]=names[k];menu_nums[c++]=controls[k];}
+ choice_kind=44;set_choices(items,c,2);st.waiting=2;frontend_refresh();
+}
+unsigned vm_menu_value(unsigned i) { return i<100?menu_nums[i]:0; }
 void vm_slot_menu(bool save) {
  /* Keep the dialogue and its continuation intact; other engine/script menus
   * have their own return contracts and must not be overwritten here. */

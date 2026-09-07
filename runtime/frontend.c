@@ -4,6 +4,8 @@
 #include "ai5/game.h"
 #include "text.h"
 #include "ax_render.h"
+#include "title_ui.h"
+#include "extras_ui.h"
 #include <unistd.h>
 #include <sys/stat.h>
 #include <zlib.h>
@@ -26,6 +28,7 @@ static char status[256];static Uint32 status_until;
 static bool ff_hold; /* fast-forward while controller X / keyboard x held (not in smoke) */
 static bool hide_msg;
 static bool gfx_dirty=true;
+void frontend_refresh(void){gfx_dirty=true;}
 static unsigned fr_cnt;static Uint32 fr_acc,fr_max,fr_logt; /* rebuild/upload canvas only when the frame actually changed */
 static bool frame_log; /* KAWA_FRAMELOG=1: periodic FRAME stats to the log (off by default) */
 static char last_msg[1024];static int last_wait=-1,last_sel=-1;static bool last_cho=false,last_hide=false,last_ff=false,last_status=false; /* hide message window/text: B (keyboard b) toggles */
@@ -353,7 +356,7 @@ void frontend_present(void) {
  SDL_FillRect(canvas,NULL,rgb(canvas,0)); if(quake_level&&(unsigned)(SDL_GetTicks()-quake_start)<3000)quake_render();
  else if(surfaces[0]){SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[0],&r,canvas,NULL);}
  bool engine_menu=(st.waiting==2&&choice_open&&vm_choice_kind()!=2);
- if(((st.text[0]&&!hide_msg)||(st.waiting==2&&choice_open&&vm_choice_kind()==2))&&(!hide_msg)) {
+ if(!engine_menu&&((st.text[0]&&!hide_msg)||(st.waiting==2&&choice_open&&vm_choice_kind()==2))&&(!hide_msg)) {
   /* engine message window = the BOTTOM half (rows 104..207) of the boot-loaded
    * mwaku.gcc panel (640x208 = two stacked 104-high frames; AI.exe 0x4391d0 window
    * height is 0x68=104) drawn into the 104-high band at the bottom (y 376..479).
@@ -392,13 +395,21 @@ void frontend_present(void) {
   }
  }
  if(engine_menu) {
-  /* engine menus (title/load/settings) - plain text list, pixel UI pending Codex */
+  if(vm_choice_kind()==37&&surfaces[7]&&surfaces[7]->h>=888) {
+   unsigned results[6];unsigned count=choice_count<6?choice_count:6;
+   for(unsigned i=0;i<count;i++)results[i]=vm_menu_value(i);
+   title_ui_draw(surfaces[7],canvas,results,count,selected);
+  } else if(vm_choice_kind()==41||vm_choice_kind()==42||vm_choice_kind()==44){
+   extras_draw(canvas,vm_choice_kind(),vm_menu_value(selected));
+  } else {
+  /* Remaining engine menus use the text fallback. */
   unsigned start=selected>=8?selected-7:0,visible=choice_count-start;if(visible>8)visible=8;
   int lh=34; int y0=104;
   for(unsigned j=0;j<visible;j++){
    int y=y0+(int)j*lh;
    bool sel=(start+j==selected);
    text_at(labels[start+j],120,y,sel?0xffe9a0:0xffffff,440);
+  }
   }
  }
  if(st.waiting==99) {
@@ -487,6 +498,41 @@ int load_state(unsigned slot) {
  notify_status(msg);note("LOADSAVE %s %s",ok?"OK":"FAIL",path);return ok;
 }
 static void confirm(void) {if(hist_mode){hist_leave();return;}if(st.waiting==3){extern void frontend_xfade_skip(void);frontend_xfade_skip();st.waiting=0;}else if(st.waiting==2){vm_choose(selected);if(st.waiting!=2)choice_open=false;}else vm_advance();}
+/* Share the rendering geometry with pointer input; outside taps are not confirms. */
+static int choice_at(int x,int y) {
+ if(!choice_open||st.waiting!=2)return -1;
+ unsigned kind=vm_choice_kind();
+ if(kind==41||kind==42||kind==44){
+  for(unsigned i=0;i<choice_count;i++){
+   SDL_Rect r;unsigned value=vm_menu_value(i);
+   if(extras_enabled(kind,value)&&extras_rect(kind,value,&r)&&x>=r.x&&x<r.x+r.w&&y>=r.y&&y<r.y+r.h)return (int)i;
+  }
+  return -1;
+ }
+ if(kind==37&&surfaces[7]&&surfaces[7]->h>=888) {
+  for(unsigned i=0;i<choice_count;i++) {
+   SDL_Rect source,r;
+   if(title_ui_button(vm_menu_value(i),i,false,&source,&r)&&
+      x>=r.x&&x<r.x+r.w&&y>=r.y&&y<r.y+r.h)return (int)i;
+  }
+  return -1;
+ }
+ unsigned base=selected>=8?selected-7:0,vis=choice_count-base;
+ if(vis>8)vis=8;
+ if(!vis)return -1;
+ int lh=34,y0=104,left=120,right=560;
+ if(kind==2) {
+  lh=96/(int)vis;if(lh>26)lh=26;if(lh<14)lh=14;
+  y0=376+(104-(int)vis*lh)/2;left=28;right=612;
+ }
+ if(x<left||x>=right||y<y0||y>=y0+(int)vis*lh)return -1;
+ return (int)base+(y-y0)/lh;
+}
+static void pointer_confirm(int x,int y) {
+ if(hist_mode){hist_leave();return;}
+ if(st.waiting==2){int i=choice_at(x,y);if(i<0)return;selected=(unsigned)i;}
+ confirm();
+}
 int main(int argc,char **argv) {
  const char *fontpath=NULL;const char *start="STARTUP.MES";
 #ifdef __SWITCH__
@@ -551,6 +597,12 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
  if(!mes_arc||!cg_arc||!seq_arc){fprintf(stderr,"Missing game archives\n");return 1;}
  SDL_GameController *controller=NULL;for(int i=0;i<SDL_NumJoysticks();i++)if(SDL_IsGameController(i)){controller=SDL_GameControllerOpen(i);break;}
  audio_init();vm_start(start);Uint32 last=SDL_GetTicks();unsigned frames=0;
+ /* Isolated smoke fixtures; never unlock anything in normal play. */
+ if(smoke&&getenv("KAWA_TEST_EXTRAS")){
+  for(unsigned i=130;i<=152;i++)st.flag[i]=1;
+  for(unsigned i=200;i<=322;i++)st.flag[i]=1;
+  for(unsigned i=1510;i<1524;i++)st.flag[i]=1;
+ }
  frame_log = getenv("KAWA_FRAMELOG")!=NULL;
  const char *km=getenv("KAWA_MENU37");if(!km)km=getenv("KAWA_MENU");unsigned kawa37=km?strtoul(km,0,10):0;
  const char *km2=getenv("KAWA_MENU38");unsigned kawa38=km2?strtoul(km2,0,10):0;
@@ -653,26 +705,15 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
     if(fb==SDL_CONTROLLER_BUTTON_X){ff_hold=false;gfx_dirty=true;}
 #endif
    }
-   if(e.type==SDL_MOUSEBUTTONDOWN&&e.button.button==SDL_BUTTON_LEFT) {
-    if(st.waiting==2){int y=e.button.y;unsigned base=selected>=8?selected-7:0;
-     unsigned vis=choice_count-base;if(vis>8)vis=8;
-     if(y>=376&&vis){int lh=vis?(104-8)/(int)vis:26;if(lh>26)lh=26;if(lh<14)lh=14;
-      int y0=376+(104-(int)vis*lh)/2;
-      int i=base+(y-y0)/lh;if(i<choice_count)selected=i;}}
-    confirm();
+   if(e.type==SDL_MOUSEMOTION&&e.motion.which!=SDL_TOUCH_MOUSEID&&vm_choice_kind()!=2) {
+    int i=choice_at(e.motion.x,e.motion.y);if(i>=0)selected=(unsigned)i;
+   }
+   if(e.type==SDL_MOUSEBUTTONDOWN&&e.button.button==SDL_BUTTON_LEFT&&e.button.which!=SDL_TOUCH_MOUSEID) {
+    pointer_confirm(e.button.x,e.button.y);
    }
    if(e.type==SDL_FINGERDOWN) { /* Switch touch: normalized 0..1 -> 640x480 logical */
     int tx=(int)(e.tfinger.x*640.0f), ty=(int)(e.tfinger.y*480.0f);
-    if(tx<0)tx=0;if(tx>639)tx=639;if(ty<0)ty=0;if(ty>479)ty=479;
-    if(hist_mode){hist_leave();} /* tap anywhere closes history */
-    else if(st.waiting==2){
-     unsigned base=selected>=8?selected-7:0;
-     if(ty>=376){unsigned vis=choice_count-base;if(vis>8)vis=8;
-      int lh=vis?(104-8)/(int)vis:26;if(lh>26)lh=26;if(lh<14)lh=14;
-      int y0=376+(104-(int)vis*lh)/2;
-      unsigned i=base+(ty-y0)/lh;if(i<choice_count)selected=i;}
-     confirm();
-    } else if(st.waiting==1||st.waiting==3)confirm();
+    if(tx>=0&&tx<640&&ty>=0&&ty<480)pointer_confirm(tx,ty);
     gfx_dirty=true;
    }
   }
@@ -684,6 +725,20 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
    else if(st.waiting==1)vm_advance();
   }
   if(smoke&&st.waiting==2){
+   {const char *kind=getenv("KAWA_ENGINESHOT");
+    if(kind&&vm_choice_kind()==strtoul(kind,NULL,10)){
+     static bool acted=false;
+     const char *actions=getenv("KAWA_EXTRA_ACTIONS");
+     if(actions&&!acted){
+      acted=true;const char *p=actions;
+      while(*p&&st.waiting==2){char *end;unsigned value=strtoul(p,&end,10);if(end==p)break;
+       for(unsigned i=0;i<choice_count;i++)if(vm_menu_value(i)==value){selected=i;vm_choose(i);break;}
+       p=*end==','?end+1:end;
+      }
+      if(st.waiting!=2)continue;
+     }
+     frontend_present();if(screenshot){SDL_SaveBMP(canvas,screenshot);screenshot=NULL;}
+     break;}}
    {static unsigned msn=0;const char*ms=getenv("KAWA_MENUSHOT");
     if(ms&&vm_choice_kind()==2&&++msn>=strtoul(ms,0,10)){
      frontend_present();if(screenshot){SDL_SaveBMP(canvas,screenshot);screenshot=NULL;}
@@ -728,7 +783,7 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
   else {st.var[1]^=123;ax_reset(&animation);if(!load_state(99)||memcmp(&st,&old,sizeof(st))||memcmp(&animation,&oldanim,sizeof(animation)))fail("Smoke save round trip mismatch");else note("SAVE ROUNDTRIP PASS (VM + AX)");}
  }
  note("RESULT messages=%u unsupported=%u waiting=%u script=%s addr=%x",st.messages,unsupported,st.waiting,st.ip.script,st.ip.addr);
- audio_fini();if(controller)SDL_GameControllerClose(controller);kawa_font_close(font);SDL_DestroyTexture(texture);SDL_FreeSurface(canvas);
+ extras_close();audio_fini();if(controller)SDL_GameControllerClose(controller);kawa_font_close(font);SDL_DestroyTexture(texture);SDL_FreeSurface(canvas);
  for(unsigned i=0;i<NSURF;i++)if(surfaces[i])SDL_FreeSurface(surfaces[i]);
  SDL_DestroyRenderer(renderer);SDL_DestroyWindow(window);kawa_text_fini();SDL_Quit();return st.waiting==99?1:0;
 }
