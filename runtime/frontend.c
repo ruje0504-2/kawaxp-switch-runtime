@@ -158,6 +158,31 @@ static bool ensure_surface(unsigned i,int w,int h) {
  if(surfaces[i]){SDL_BlitSurface(surfaces[i],NULL,n,NULL);SDL_FreeSurface(surfaces[i]);}surfaces[i]=n;return true;
 }
 static unsigned rgb(SDL_Surface *s,uint32_t c) {return SDL_MapRGBA(s->format,(c>>16)&255,(c>>8)&255,c&255,255);}
+/* blit a region of a 32-bit surface, skipping classic AI5 chroma keys
+ * (green 0,255,0 and magenta 255,0,255; red is real art in these parts).
+ * Used for the UI part images (selparts highlight bar etc.) loaded from BMP. */
+static void blit_keyed(SDL_Surface *src,SDL_Surface *dst,int sx,int sy,int sw,int sh,int dx,int dy){
+ if(!src||!dst)return;
+ if(src->format->BytesPerPixel!=4||dst->format->BytesPerPixel!=4)return;
+ if(sx<0){sw+=sx;dx-=sx;sx=0;}if(sy<0){sh+=sy;dy-=sy;sy=0;}
+ if(sx+sw>src->w)sw=src->w-sx;if(sy+sh>src->h)sh=src->h-sy;
+ if(sw<=0||sh<=0)return;
+ if(dx<0){sw+=dx;sx-=dx;dx=0;}if(dy<0){sh+=dy;sy-=dy;dy=0;}
+ if(dx+sw>dst->w)sw=dst->w-dx;if(dy+sh>dst->h)sh=dst->h-dy;
+ if(sw<=0||sh<=0)return;
+ unsigned char*sp=(unsigned char*)src->pixels+sy*src->pitch+sx*4;
+ unsigned char*dp=(unsigned char*)dst->pixels+dy*dst->pitch+dx*4;
+ for(int y=0;y<sh;y++){
+  unsigned char*sr=sp+(size_t)y*src->pitch,*dr=dp+(size_t)y*dst->pitch;
+  for(int x=0;x<sw;x++){
+   unsigned char*px=sr+x*4;
+   unsigned char r=px[0],g=px[1],b=px[2];
+   if(g>200&&r<80&&b<80)continue;      /* green chroma -> transparent */
+   if(r>200&&b>200&&g<80)continue;     /* magenta chroma -> transparent */
+   unsigned char*d=dr+x*4;d[0]=r;d[1]=g;d[2]=b;d[3]=255;
+  }
+ }
+}
 void animation_load(const char *name) {
  st.var[14]=1;
  struct archive_data *d=seq_arc?archive_get(seq_arc,name):NULL;
@@ -232,6 +257,29 @@ void set_choices(const char **items,unsigned count,int kind) {
 static SDL_Surface *msg_cache;
 static char msg_key[1024];
 static uint32_t msg_col;
+/* ---- text backlog (message history) ---- */
+#define HIST_MAX 256
+#define HIST_LEN 1024
+static char history[HIST_MAX][HIST_LEN];
+static unsigned hist_count, hist_head; /* count written; head = next write slot */
+static bool hist_mode;                 /* full-screen history view */
+static int hist_scroll;                /* 0 = newest at bottom */
+static bool hist_avail(void){return hist_count>0;}
+static void hist_add(const char *s){
+ if(!s||!s[0])return;
+ /* skip pure repeats of the last line (engine re-commits same text) */
+ if(hist_count && !strcmp(history[(hist_head+HIST_MAX-1)%HIST_MAX], s))return;
+ snprintf(history[hist_head],HIST_LEN,"%s",s);
+ hist_head=(hist_head+1)%HIST_MAX;
+ if(hist_count<HIST_MAX)hist_count++;
+ if(hist_scroll)hist_scroll++; /* keep view pinned to bottom while open */
+}
+static const char *hist_line(int idx){ /* 0 = oldest .. count-1 = newest */
+ return history[(hist_head+HIST_MAX-hist_count+idx)%HIST_MAX];
+}
+static void hist_enter(void){if(hist_avail()){hist_mode=true;hist_scroll=0;gfx_dirty=true;}}
+static void hist_leave(void){hist_mode=false;gfx_dirty=true;}
+void frontend_hist_note(void){ if(st.text[0])hist_add(st.text); } /* commit-time hook */
 static SDL_Surface *msg_surface(int *w,int *h){
  if(msg_cache&&!strcmp(msg_key,st.text)&&msg_col==st.color){*w=600;*h=msg_cache->h;return msg_cache;}
  SDL_Surface*s0=kawa_text_render(font,st.text,600,0x000000);
@@ -287,7 +335,9 @@ static void win_ensure(void){
 void frontend_present(void) {
  if(!canvas)return;
  /* state-driven dirtiness */
- if(strcmp(last_msg,st.text)){snprintf(last_msg,sizeof(last_msg),"%s",st.text);gfx_dirty=true;}
+ if(strcmp(last_msg,st.text)){
+  if(last_msg[0]&&!choice_open)hist_add(last_msg); /* the line we just finished showing */
+  snprintf(last_msg,sizeof(last_msg),"%s",st.text);gfx_dirty=true;}
  if(last_wait!=st.waiting){last_wait=st.waiting;gfx_dirty=true;}
  if(last_sel!=selected){last_sel=selected;gfx_dirty=true;}
  if(last_cho!=choice_open){last_cho=choice_open;gfx_dirty=true;}
@@ -302,11 +352,13 @@ void frontend_present(void) {
  gfx_dirty=false;
  SDL_FillRect(canvas,NULL,rgb(canvas,0)); if(quake_level&&(unsigned)(SDL_GetTicks()-quake_start)<3000)quake_render();
  else if(surfaces[0]){SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[0],&r,canvas,NULL);}
- if(st.text[0]&&!hide_msg) {
+ bool engine_menu=(st.waiting==2&&choice_open&&vm_choice_kind()!=2);
+ if(((st.text[0]&&!hide_msg)||(st.waiting==2&&choice_open&&vm_choice_kind()==2))&&(!hide_msg)) {
   /* engine message window = the BOTTOM half (rows 104..207) of the boot-loaded
    * mwaku.gcc panel (640x208 = two stacked 104-high frames; AI.exe 0x4391d0 window
    * height is 0x68=104) drawn into the 104-high band at the bottom (y 376..479).
-   * Frame pixels stay opaque; the gray interior is blended translucent over the CG. */
+   * Frame pixels stay opaque; the gray interior is blended translucent over the CG.
+   * Story choices share this same window and backdrop, listed top-down. */
   win_ensure();
   if(win_surf){
    SDL_Rect to={0,376,640,104};
@@ -323,14 +375,31 @@ void frontend_present(void) {
     }
    }
   }
-  {int tw=600,th=0;SDL_Surface*ms=msg_surface(&tw,&th);
+  if(st.waiting==2&&choice_open&&vm_choice_kind()==2){
+   /* story choices render as plain text inside the message window, exactly like
+    * the dialogue line (no box/frame); the selected row is tinted. */
+   unsigned start=selected>=8?selected-7:0,visible=choice_count-start;if(visible>8)visible=8;
+   int lh=visible? (104-8)/ (int)visible : 26; if(lh>26)lh=26; if(lh<14)lh=14;
+   int y0=376+(104-(int)visible*lh)/2;
+   for(unsigned j=0;j<visible;j++){
+    int y=y0+(int)j*lh;
+    bool sel=(start+j==selected);
+    text_at(labels[start+j],28,y+2,sel?0xffe9a0:0xffffff,584);
+   }
+  } else {
+   int tw=600,th=0;SDL_Surface*ms=msg_surface(&tw,&th);
    if(ms){SDL_Rect to={28,392,0,0};SDL_BlitSurface(ms,NULL,canvas,&to);}
   }
  }
- if(st.waiting==2&&choice_open) {
+ if(engine_menu) {
+  /* engine menus (title/load/settings) - plain text list, pixel UI pending Codex */
   unsigned start=selected>=8?selected-7:0,visible=choice_count-start;if(visible>8)visible=8;
-  SDL_Rect box={100,100,440,(int)visible*36+16};SDL_FillRect(canvas,&box,rgb(canvas,0x12212d));
-  for(unsigned j=0;j<visible;j++)text_at(labels[start+j],120,108+j*36,start+j==selected?0xffdd88:0xffffff,410);
+  int lh=34; int y0=104;
+  for(unsigned j=0;j<visible;j++){
+   int y=y0+(int)j*lh;
+   bool sel=(start+j==selected);
+   text_at(labels[start+j],120,y,sel?0xffe9a0:0xffffff,440);
+  }
  }
  if(st.waiting==99) {
   SDL_Rect bg={0,0,640,160};SDL_FillRect(canvas,&bg,rgb(canvas,0x501010));
@@ -339,6 +408,33 @@ void frontend_present(void) {
  }
  if(status_until>SDL_GetTicks()){SDL_Rect r={0,0,640,34};SDL_FillRect(canvas,&r,rgb(canvas,0x12212d));text_at(status,12,4,0xffffff,610);}
  if(ff_hold&&!smoke&&(st.waiting==1||st.waiting==3)){SDL_Rect r={572,4,64,20};SDL_FillRect(canvas,&r,rgb(canvas,0x10241c));text_at(">>",578,5,0x7dffa0,50);}
+ if(hist_mode) { /* ---- full-screen text history ---- */
+  SDL_FillRect(canvas,NULL,rgb(canvas,0x000000));
+  SDL_Rect tbar={0,0,640,28};SDL_FillRect(canvas,&tbar,rgb(canvas,0x1a2033));
+  text_at("文字履歴 — 戻る:B / ↓:新しい  ↑:古い",10,5,0x9fc4ff,620);
+  unsigned total=hist_count;
+  int newest=(int)total-1-hist_scroll;      /* index of the newest visible line */
+  if(newest<0)newest=0;
+  /* each entry may wrap to several rendered rows, so page by actual measured
+   * pixel height instead of a fixed stride (long lines were overlapping) */
+  int avail=480-28-22; /* under the title bar, above the bottom bar */
+  int first=newest, used=0;
+  while(first>0){
+   SDL_Surface*m=kawa_text_render(font,hist_line(first-1),616,0xdddddd);
+   int h=m?m->h:24; if(m)SDL_FreeSurface(m);
+   if(used+h>avail)break;
+   used+=h+4; first--;
+  }
+  int y=30;
+  for(int idx=first;idx<=newest;idx++){
+   SDL_Surface*m=kawa_text_render(font,hist_line(idx),616,0xdddddd);
+   if(m){SDL_Rect d={12,y,0,0};SDL_BlitSurface(m,NULL,canvas,&d);
+    y+=m->h+4; SDL_FreeSurface(m);}
+  }
+  SDL_Rect hbar={0,478-14,640,14};SDL_FillRect(canvas,&hbar,rgb(canvas,0x1a2033));
+  {char b[64];snprintf(b,sizeof(b),"%d/%u",newest+1,total);
+   text_at(b,12,479-12,0x88aadd,600);}
+ }
 SDL_UpdateTexture(texture,NULL,canvas->pixels,canvas->pitch);
  SDL_RenderClear(renderer);SDL_RenderCopy(renderer,texture,NULL,NULL);SDL_RenderPresent(renderer);
 }
@@ -390,7 +486,7 @@ int load_state(unsigned slot) {
  char msg[64];snprintf(msg,sizeof(msg),ok?"Loaded slot %u":"Save damaged or incompatible (slot %u)",slot);
  notify_status(msg);note("LOADSAVE %s %s",ok?"OK":"FAIL",path);return ok;
 }
-static void confirm(void) {if(st.waiting==3){extern void frontend_xfade_skip(void);frontend_xfade_skip();st.waiting=0;}else if(st.waiting==2){vm_choose(selected);if(st.waiting!=2)choice_open=false;}else vm_advance();}
+static void confirm(void) {if(hist_mode){hist_leave();return;}if(st.waiting==3){extern void frontend_xfade_skip(void);frontend_xfade_skip();st.waiting=0;}else if(st.waiting==2){vm_choose(selected);if(st.waiting!=2)choice_open=false;}else vm_advance();}
 int main(int argc,char **argv) {
  const char *fontpath=NULL;const char *start="STARTUP.MES";
 #ifdef __SWITCH__
@@ -492,12 +588,19 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
    if(e.type==SDL_KEYDOWN&&!e.key.repeat) {
     switch(e.key.keysym.sym) {
     case SDLK_ESCAPE:running=false;break;
-    case SDLK_RETURN:case SDLK_SPACE:confirm();break;
-    case SDLK_UP:if(selected&&choice_count){selected--;gfx_dirty=true;}break;
-    case SDLK_DOWN:if(selected+1<choice_count){selected++;gfx_dirty=true;}break;
+    case SDLK_RETURN:case SDLK_SPACE:
+     if(hist_mode){hist_leave();}else confirm();break;
+    case SDLK_UP:
+     if(hist_mode){if(hist_scroll< (int)hist_count-1)hist_scroll++;gfx_dirty=true;}
+     else if(selected&&choice_count){selected--;gfx_dirty=true;}break;
+    case SDLK_DOWN:
+     if(hist_mode){if(hist_scroll>0)hist_scroll--;gfx_dirty=true;}
+     else if(selected+1<choice_count){selected++;gfx_dirty=true;}break;
+    case SDLK_h:case SDLK_y:
+     if(hist_mode)hist_leave();else if(st.waiting==1||st.waiting==3)hist_enter();break;
     case SDLK_F5:vm_slot_menu(true);break;case SDLK_F9:vm_slot_menu(false);break;
     case SDLK_x:ff_hold=true;gfx_dirty=true;break;
-    case SDLK_b:hide_msg=!hide_msg;gfx_dirty=true;break;
+    case SDLK_b:if(hist_mode)hist_leave();else {hide_msg=!hide_msg;gfx_dirty=true;}break;
     }
    }
    if(e.type==SDL_KEYUP&&(e.key.keysym.sym==SDLK_x)){ff_hold=false;gfx_dirty=true;}
@@ -509,20 +612,35 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
 #ifdef __SWITCH__
     switch(fb){
      case SDL_CONTROLLER_BUTTON_B:confirm();break;      /* printed A */
-     case SDL_CONTROLLER_BUTTON_A:hide_msg=!hide_msg;gfx_dirty=true;break;  /* printed B */
+     case SDL_CONTROLLER_BUTTON_A:if(hist_mode)hist_leave();else hide_msg=!hide_msg;gfx_dirty=true;break;  /* printed B */
      case SDL_CONTROLLER_BUTTON_Y:ff_hold=true;break;   /* printed X */
+     case SDL_CONTROLLER_BUTTON_BACK:
+      if(hist_mode)hist_leave();else if(st.waiting==1||st.waiting==3)hist_enter();break; /* printed - */
     }
 #else
     switch(fb){
      case SDL_CONTROLLER_BUTTON_A:confirm();break;
-     case SDL_CONTROLLER_BUTTON_B:hide_msg=!hide_msg;gfx_dirty=true;break;
+     case SDL_CONTROLLER_BUTTON_B:if(hist_mode)hist_leave();else hide_msg=!hide_msg;gfx_dirty=true;break;
      case SDL_CONTROLLER_BUTTON_X:ff_hold=true;gfx_dirty=true;break;
+     case SDL_CONTROLLER_BUTTON_BACK:
+     case SDL_CONTROLLER_BUTTON_Y:
+      if(hist_mode)hist_leave();else if(st.waiting==1||st.waiting==3)hist_enter();break;
     }
 #endif
     switch(fb){
      case SDL_CONTROLLER_BUTTON_START:running=false;break;
-     case SDL_CONTROLLER_BUTTON_DPAD_UP:if(selected)selected--;break;
-     case SDL_CONTROLLER_BUTTON_DPAD_DOWN:if(selected+1<choice_count)selected++;break;
+     case SDL_CONTROLLER_BUTTON_DPAD_UP:
+      if(hist_mode){ /* scroll toward older lines; at the oldest line, tap Up again to close */
+       if(hist_scroll < (int)hist_count-1)hist_scroll++;
+       else hist_leave();
+       gfx_dirty=true;
+      } else if(!choice_open&&(st.waiting==1||st.waiting==3))hist_enter(); /* short tap Up opens history */
+      else if(selected&&choice_count)selected--;
+      break;
+     case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+      if(hist_mode){if(hist_scroll>0)hist_scroll--;gfx_dirty=true;} /* scroll toward newest */
+      else if(selected+1<choice_count)selected++;
+      break;
      case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:vm_slot_menu(true);break;
      case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:vm_slot_menu(false);break;
     }
@@ -536,24 +654,54 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
 #endif
    }
    if(e.type==SDL_MOUSEBUTTONDOWN&&e.button.button==SDL_BUTTON_LEFT) {
-    if(st.waiting==2){int y=e.button.y;unsigned base=selected>=8?selected-7:0;if(y>=108){unsigned i=base+(y-108)/36;if(i<choice_count)selected=i;}}
+    if(st.waiting==2){int y=e.button.y;unsigned base=selected>=8?selected-7:0;
+     unsigned vis=choice_count-base;if(vis>8)vis=8;
+     if(y>=376&&vis){int lh=vis?(104-8)/(int)vis:26;if(lh>26)lh=26;if(lh<14)lh=14;
+      int y0=376+(104-(int)vis*lh)/2;
+      int i=base+(y-y0)/lh;if(i<choice_count)selected=i;}}
     confirm();
+   }
+   if(e.type==SDL_FINGERDOWN) { /* Switch touch: normalized 0..1 -> 640x480 logical */
+    int tx=(int)(e.tfinger.x*640.0f), ty=(int)(e.tfinger.y*480.0f);
+    if(tx<0)tx=0;if(tx>639)tx=639;if(ty<0)ty=0;if(ty>479)ty=479;
+    if(hist_mode){hist_leave();} /* tap anywhere closes history */
+    else if(st.waiting==2){
+     unsigned base=selected>=8?selected-7:0;
+     if(ty>=376){unsigned vis=choice_count-base;if(vis>8)vis=8;
+      int lh=vis?(104-8)/(int)vis:26;if(lh>26)lh=26;if(lh<14)lh=14;
+      int y0=376+(104-(int)vis*lh)/2;
+      unsigned i=base+(ty-y0)/lh;if(i<choice_count)selected=i;}
+     confirm();
+    } else if(st.waiting==1||st.waiting==3)confirm();
+    gfx_dirty=true;
    }
   }
   Uint32 anim_now=SDL_GetTicks();animation_update(smoke?AX_TICK_MS:anim_now-anim_last);anim_last=anim_now;
   {extern void frontend_xfade_poll(void);frontend_xfade_poll();}
   if(st.waiting==3&&(smoke||(Sint32)(SDL_GetTicks()-st.sys[255])>=0))st.waiting=0;
-  if((ff_hold||getenv("KAWA_FF"))&&!smoke) { /* fast-forward: skip timed waits, auto-advance dialogue; stop at choices/menus */
+  if((ff_hold||getenv("KAWA_FF"))&&!smoke&&!hist_mode) { /* fast-forward: skip timed waits, auto-advance dialogue; stop at choices/menus */
    if(st.waiting==3){if(!getenv("KAWA_FFNOSKIP")){extern void frontend_xfade_skip(void);frontend_xfade_skip();}st.waiting=0;}
    else if(st.waiting==1)vm_advance();
   }
-  if(smoke&&st.waiting==2){unsigned kk=vm_choice_kind();unsigned want=0;bool matched=false;
+  if(smoke&&st.waiting==2){
+   {static unsigned msn=0;const char*ms=getenv("KAWA_MENUSHOT");
+    if(ms&&vm_choice_kind()==2&&++msn>=strtoul(ms,0,10)){
+     frontend_present();if(screenshot){SDL_SaveBMP(canvas,screenshot);screenshot=NULL;}
+     break;}}
+   {unsigned kk=vm_choice_kind();unsigned want=0;bool matched=false;
  if(kk==2){for(unsigned bi=0;bi<nbrk;bi++){if(!brk_used[bi]){const char*a=st.ip.script,*b=brk[bi].script;
    size_t la=strcspn(a,"."),lb=strcspn(b,".");
    if(la==lb&&!strncasecmp(a,b,la)&&(!brk[bi].have_addr||brk[bi].addr==(unsigned long)vm_last_menu_addr())){brk_used[bi]=1;want=brk[bi].opt;matched=true;break;}}}
   if(!matched&&rpos<rlen)want=route[rpos++];}
  else want=(kk==37)?kawa37:(kk==38)?kawa38:(kk==41)?kawa41:(kk==42)?kawa42:(kk==43)?kawa43:(kk==44)?kawa44:(kk==45)?kawa45:(kk==46)?kawa46:0;unsigned pick=choice_count?(want<choice_count?want:choice_count-1):0;vm_choose(pick);if(st.waiting!=2)choice_open=false;}
+  }
   if(smoke&&st.waiting==1) {
+   if(getenv("KAWA_HISTTEST")&&st.messages>=strtoul(getenv("KAWA_HISTTEST"),0,10)){
+    note("HISTTEST msg=%u count=%u avail=%d",st.messages,hist_count,hist_avail());
+    hist_enter();frontend_present();
+    if(screenshot){SDL_SaveBMP(canvas,screenshot);screenshot=NULL;}
+    hist_leave();break;
+   }
    if(st.messages>=(unsigned)smoke_messages) {if(!hold_ticks)break;hold_ticks--;}
    else {
     {static bool as_done=false; if(!as_done&&autosave_at&&st.messages>=autosave_at){as_done=true;note("AUTOSAVE open slot menu");vm_slot_menu(true);}}

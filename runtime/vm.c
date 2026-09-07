@@ -396,7 +396,7 @@ void vm_step(void) {
  case 22:st.color=par(p,0);st.sys[7]=par(p,1);break;
  case 0x20:st.waiting=3;st.sys[255]=SDL_GetTicks()+par(p,0)*16;break;
  case 0x21:st.text[0]=0;break;
- case 0x22:st.waiting=1;st.messages++;note("MESSAGE %u %s:%x",st.messages,s->name,q->address);break;
+ case 0x22:frontend_hist_note();st.waiting=1;st.messages++;note("MESSAGE %u %s:%x",st.messages,s->name,q->address);break;
  case 0x23:draw_image(str(p,0),st.sys[12],vector_length(p)>1?(int)par(p,1):-1,vector_length(p)>2?(int)par(p,2):-1);break;
  case 0x24:case 0x25:case 0x26:copy_rect(par(p,0),par(p,1),par(p,2),par(p,3),par(p,4),par(p,5),par(p,6),par(p,7),op==0x25);break;
  case 0x27:fill_rect(par(p,0),par(p,1),par(p,2),par(p,3),st.sys[12],st.sys[7]);break;
