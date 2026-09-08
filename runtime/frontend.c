@@ -38,6 +38,17 @@ static unsigned fr_cnt;static Uint32 fr_acc,fr_max,fr_logt; /* rebuild/upload ca
 static bool frame_log; /* KAWA_FRAMELOG=1: periodic FRAME stats to the log (off by default) */
 static char last_msg[1024];static int last_wait=-1,last_sel=-1;static bool last_cho=false,last_hide=false,last_ff=false,last_status=false; /* hide message window/text: B (keyboard b) toggles */
 struct ax_player animation;
+/* Draw history: every draw_image call (name,dst,x,y) is appended so a v3
+ * save can replay them in order on load.  A scene layer often receives
+ * several stacked IMAGEs (background then characters); replaying the whole
+ * history rebuilds each layer exactly. */
+#define IMG_HIST_MAX 256
+struct img_hist_ent { char name[40]; unsigned short dst; short x,y; };
+static struct img_hist_ent img_hist[IMG_HIST_MAX];
+static unsigned img_hist_n;
+/* Per-surface last-source kept for quick checks (dst 8 = AX source). */
+static char surf_src[NSURF][40];
+static short surf_x[NSURF], surf_y[NSURF];
 /* AI.exe 43e590 / 437270: timer-driven row displacement, script-controlled. */
 static bool quake_level;
 static unsigned quake_phase;
@@ -288,6 +299,11 @@ void draw_image(const char *name,unsigned dst,int x,int y) {
   SDL_Surface *s=SDL_CreateRGBSurfaceWithFormatFrom(c->pixels,c->metrics.w,c->metrics.h,32,c->metrics.w*4,SDL_PIXELFORMAT_RGBA32);
   if(s){SDL_SetSurfaceBlendMode(s,SDL_BLENDMODE_NONE);SDL_Rect to={x,y,0,0};SDL_BlitSurface(s,NULL,surfaces[dst],&to);SDL_FreeSurface(s);}
   st.sys[8]=x;st.sys[9]=y;st.sys[10]=c->metrics.w;st.sys[11]=c->metrics.h;
+  if(dst<NSURF){
+   snprintf(surf_src[dst],sizeof(surf_src[dst]),"%s",real);surf_x[dst]=(short)x;surf_y[dst]=(short)y;
+   if(img_hist_n<IMG_HIST_MAX){struct img_hist_ent *e=&img_hist[img_hist_n++];
+    snprintf(e->name,sizeof(e->name),"%s",real);e->dst=(unsigned short)dst;e->x=(short)x;e->y=(short)y;}
+  }
   note("IMAGE %s dst=%u %dx%d at %d,%d",real,dst,c->metrics.w,c->metrics.h,x,y);
  }
  cg_free(c);
@@ -479,51 +495,206 @@ SDL_UpdateTexture(texture,NULL,canvas->pixels,canvas->pitch);
 }
 static void notify_status(const char *s) {snprintf(status,sizeof(status),"%s",s);status_until=SDL_GetTicks()+2500;}
 static bool valid_loc(struct loc *p) {return memchr(p->script,0,32)&&p->addr<16*1024*1024;}
+/* In-memory gzip (RFC1952) helpers.  Save payloads are compressed in RAM and
+ * written with plain fopen/fwrite, which works on every layout including the
+ * fsdev save: device (gzopen/gzclose file IO can fail there). */
+static unsigned char *gz_mem_compress(const unsigned char *src, size_t n, size_t *outn) {
+ uLongf cap = compressBound((uLong)n) + 64;
+ unsigned char *out = malloc(cap); if (!out) return NULL;
+ z_stream s; memset(&s,0,sizeof(s));
+ if (deflateInit2(&s, Z_BEST_COMPRESSION, Z_DEFLATED, 15+16, 8, Z_DEFAULT_STRATEGY) != Z_OK) { free(out); return NULL; }
+ s.next_in = (Bytef*)src; s.avail_in = (uInt)n;
+ s.next_out = out; s.avail_out = (uInt)cap;
+ int r = deflate(&s, Z_FINISH);
+ deflateEnd(&s);
+ if (r != Z_STREAM_END) { free(out); return NULL; }
+ *outn = s.total_out;
+ return out;
+}
+static unsigned char *gz_mem_decompress(const unsigned char *gz, size_t n, size_t *outn) {
+ size_t cap = 1 << 20; unsigned char *out = malloc(cap); if (!out) return NULL;
+ z_stream s; memset(&s,0,sizeof(s));
+ if (inflateInit2(&s, 15+16) != Z_OK) { free(out); return NULL; }
+ s.next_in = (Bytef*)gz; s.avail_in = (uInt)n;
+ size_t done = 0; int r = Z_OK;
+ while (r != Z_STREAM_END) {
+  if (done == cap) { cap *= 2; unsigned char *o = realloc(out, cap); if (!o) { free(out); inflateEnd(&s); return NULL; } out = o; }
+  s.next_out = out + done; s.avail_out = (uInt)(cap - done);
+  r = inflate(&s, Z_NO_FLUSH);
+  done = cap - s.avail_out;
+  if (r != Z_OK && r != Z_STREAM_END) { free(out); inflateEnd(&s); return NULL; }
+  if (done == cap && r != Z_STREAM_END) { cap *= 2; unsigned char *o = realloc(out, cap); if (!o) { free(out); inflateEnd(&s); return NULL; } out = o; }
+ }
+ inflateEnd(&s); *outn = done; return out;
+}
 int save_state(unsigned slot) {
  if(st.waiting!=1){notify_status("Save is available at a dialogue pause.");return 0;}
  char path[1200],tmp[1200];snprintf(path,sizeof(path),"%s/slot%u.kws",save_dir,slot);snprintf(tmp,sizeof(tmp),"%s/slot%u.tmp",save_dir,slot);
- gzFile f=gzopen(tmp,"wb3");if(!f){notify_status("Cannot open save file");return 0;}
- const uint32_t hdr[]={0x3153574b,2,sizeof(st),NSURF};bool ok=gzwrite(f,hdr,sizeof(hdr))==sizeof(hdr)&&gzwrite(f,&st,sizeof(st))==sizeof(st);
- for(unsigned i=0;i<NSURF&&ok;i++) {
+ /* v4: save the full pixel contents of every non-empty surface (like v2),
+  * plus VM+AX state.  Loading restores every layer (background, characters,
+  * AX source) exactly, so pictures and animations resume with no re-draw
+  * needed.  gzip keeps it small (scenes are mostly flat CG). */
+ size_t cap=(1<<22), n=0;
+ unsigned char *mb=malloc(cap);
+ if(!mb){notify_status("Save out of memory");return 0;}
+ #define MB_NEED(x) do { if (n+(x)>cap){ while(cap<n+(x))cap*=2; unsigned char*np=realloc(mb,cap); if(!np){free(mb);notify_status("Save out of memory");return 0;} mb=np; } } while(0)
+ #define MB_PUT(p,x) do { MB_NEED(x); memcpy(mb+n,(p),(x)); n+=(x); } while(0)
+ const uint32_t hdr[]={0x3153574b,4,sizeof(st),NSURF};
+ MB_PUT(hdr,sizeof(hdr)); MB_PUT(&st,sizeof(st));
+ for(unsigned i=0;i<NSURF;i++) {
   uint32_t wh[]={surfaces[i]?surfaces[i]->w:0,surfaces[i]?surfaces[i]->h:0};
-  ok=gzwrite(f,wh,sizeof(wh))==sizeof(wh);
-  if(surfaces[i])for(int y=0;y<surfaces[i]->h&&ok;y++)ok=gzwrite(f,(uint8_t*)surfaces[i]->pixels+y*surfaces[i]->pitch,wh[0]*4)==(int)wh[0]*4;
+  MB_PUT(wh,sizeof(wh));
+  if(surfaces[i])for(int y=0;y<surfaces[i]->h;y++)MB_PUT((uint8_t*)surfaces[i]->pixels+y*surfaces[i]->pitch,wh[0]*4);
  }
- if(ok)ok=gzwrite(f,&animation,sizeof(animation))==sizeof(animation);
- if(gzclose(f)!=Z_OK)ok=false;
- /* rename() refuses to replace an existing file on Switch fsdev/FAT and
-   * Windows, so overwriting an older save failed: delete the old save and
-   * retry once when the plain rename is rejected. */
-  if(ok&&rename(tmp,path)){remove(path);ok=rename(tmp,path)==0;}
- if(!ok)remove(tmp);
+ MB_PUT(&animation,sizeof(animation));
+#undef MB_NEED
+ #undef MB_PUT
+ size_t orign=n;
+ size_t gzn=0; unsigned char *gz=gz_mem_compress(mb,orign,&gzn); free(mb);
+ if(!gz){notify_status("Save compress failed");return 0;}
+ bool ok=false;
 #ifdef __SWITCH__
- {extern void switch_hos_commit(void);switch_hos_commit();}
+ {extern int switch_save_active;
+  if(switch_save_active){
+   /* HOS SaveData: write the gz file through the native FsFileSystem API
+    * (fsdev stdio dies past ~1.5MB; native chunked write handles MBs). */
+   extern int switch_hos_save_write(const char*,const void*,size_t);
+   extern int switch_hos_save_remove(const char*);
+   /* This HOS SaveData rejects any single file past ~1.5MB, so store the gz
+    * as 1MB segments slot%u.kws.0, .1, ... and join them on load. */
+   const size_t SEG=(1u<<20);
+   ok=true;
+   for(int sgi=0;sgi<8&&ok;sgi++){
+    size_t off=(size_t)sgi*SEG;
+    if(off>=gzn)break;
+    size_t n=gzn-off; if(n>SEG)n=SEG;
+    char rel[64];
+    snprintf(rel,sizeof(rel),"slot%u.kws.%d",slot,sgi);
+    switch_hos_save_remove(rel);
+    int wr=switch_hos_save_write(rel,gz+off,n);
+    if(wr){ok=false;break;}
+   }
+   /* wipe any stale higher segments from an earlier larger save */
+   if(ok){for(int sgi=8;sgi<16;sgi++){char rel[64];snprintf(rel,sizeof(rel),"slot%u.kws.%d",slot,sgi);switch_hos_save_remove(rel);}}
+
+  } else
 #endif
+  {
+   FILE *rf=fopen(tmp,"wb");
+   if(rf){
+    ok=fwrite(gz,1,gzn,rf)==gzn&&fclose(rf)==0;
+    if(ok&&rename(tmp,path)){remove(path);ok=rename(tmp,path)==0;}
+   }
+   if(!ok)remove(tmp);
+  }
+#ifdef __SWITCH__
+ }
+#endif
+ if(ok)note("SAVE %zu bytes -> %zu compressed",orign,gzn);
  char msg[64];snprintf(msg,sizeof(msg),ok?"Saved slot %u":"Save failed (slot %u)",slot);
  notify_status(msg);note("SAVE %s %s",ok?"OK":"FAIL",path);return ok;
 }
+/* After any load, cancel running transitions/effects so the restored frame
+ * stays on screen instead of being overwritten by a stale fade/wipe/quake. */
+static void load_clear_fx(void){
+ xf.on=false; if(xf.from){SDL_FreeSurface(xf.from);xf.from=NULL;}
+ fd.on=false; ppf.on=false;
+ quake_level=false; quake_phase=0;
+ gfx_dirty=true;
+}
 int load_state(unsigned slot) {
  char path[1200];snprintf(path,sizeof(path),"%s/slot%u.kws",save_dir,slot);
- gzFile f=gzopen(path,"rb");if(!f){char msg[64];snprintf(msg,sizeof(msg),"No saved game in slot %u",slot);notify_status(msg);return 0;}
+ unsigned char *gz=NULL; size_t fsz=0; bool fok=false;
+#ifdef __SWITCH__
+ {extern int switch_save_active;
+  if(switch_save_active){
+   extern int switch_hos_save_read(const char*,void*,size_t,size_t*);
+   /* Load the segmented save: join slot%u.kws.0/.1/... until a segment is
+    * shorter than 1MB or missing.  (A legacy single-file slot%u.kws also
+    * still works via the fopen fallback below when segments are absent.) */
+   const size_t SEG=(1u<<20);
+   size_t cap=1u<<25; gz=malloc(cap);
+   if(gz){
+    size_t total=0; bool cont=true;
+    for(int sgi=0;sgi<16&&cont;sgi++){
+     char rel[64]; snprintf(rel,sizeof(rel),"slot%u.kws.%d",slot,sgi);
+     size_t got=0;
+     if(switch_hos_save_read(rel,gz+total,cap-total,&got)!=0||got==0){cont=false;break;}
+     total+=got;
+     if(got<SEG)cont=false;
+    }
+    if(total>0){fsz=total;fok=true;} else {free(gz);gz=NULL;}
+   }
+  }
+ }
+#endif
+ if(!fok){
+  FILE *rf=fopen(path,"rb");if(!rf){char msg[64];snprintf(msg,sizeof(msg),"No saved game in slot %u",slot);notify_status(msg);free(gz);return 0;}
+  fseek(rf,0,SEEK_END); fsz=(size_t)ftell(rf); fseek(rf,0,SEEK_SET);
+  gz=malloc(fsz?fsz:1); fok=gz&&fread(gz,1,fsz,rf)==fsz; fclose(rf);
+ }
+ if(!fok){free(gz);char msg[64];snprintf(msg,sizeof(msg),"No saved game in slot %u",slot);notify_status(msg);return 0;}
+ size_t raw_n=0; unsigned char *raw=gz_mem_decompress(gz,fsz,&raw_n); free(gz);
+ if(!raw){char msg[64];snprintf(msg,sizeof(msg),"Save damaged or incompatible (slot %u)",slot);notify_status(msg);return 0;}
+ size_t at=0;
+ #define RD(p,n) do { if (at+(n)>raw_n) { ok=false; goto rd_done; } memcpy((p),raw+at,(n)); at+=(n); } while (0)
  struct state next;uint32_t hdr[4];SDL_Surface *nextsurf[NSURF]={0};
  struct ax_player nextanim;ax_reset(&nextanim);
- bool ok=gzread(f,hdr,sizeof(hdr))==sizeof(hdr)&&hdr[0]==0x3153574b&&(hdr[1]==1||hdr[1]==2)&&hdr[2]==sizeof(st)&&hdr[3]==NSURF;
- if(ok)ok=gzread(f,&next,sizeof(next))==sizeof(next)&&next.depth<=NFRAME&&next.waiting==1&&memchr(next.text,0,sizeof(next.text))&&valid_loc(&next.ip);
+ bool ok=true;
+ RD(hdr,sizeof(hdr));
+ unsigned ver=hdr[1];
+ if(!(hdr[0]==0x3153574b&&(ver>=1&&ver<=4)&&hdr[2]==sizeof(st)))ok=false;
+ if(ok){RD(&next,sizeof(next)); if(!(next.depth<=NFRAME&&next.waiting==1&&memchr(next.text,0,sizeof(next.text))&&valid_loc(&next.ip)))ok=false;}
  if(ok)for(unsigned i=0;i<NPROC;i++)if(!valid_loc(&next.proc[i]))ok=false;
  if(ok)for(unsigned i=0;i<next.depth;i++)if(!valid_loc(&next.frames[i]))ok=false;
- for(unsigned i=0;i<NSURF&&ok;i++) {
-  uint32_t wh[2];ok=gzread(f,wh,sizeof(wh))==sizeof(wh);if(!ok)break;
-  if(!wh[0]&&!wh[1])continue;
-  if(wh[0]<640||wh[1]<480||wh[0]>4096||wh[1]>4096){ok=false;break;}
-  nextsurf[i]=SDL_CreateRGBSurfaceWithFormat(0,wh[0],wh[1],32,SDL_PIXELFORMAT_RGBA32);if(!nextsurf[i]){ok=false;break;}
-  SDL_SetSurfaceBlendMode(nextsurf[i],SDL_BLENDMODE_NONE);
-  for(unsigned y=0;y<wh[1]&&ok;y++)ok=gzread(f,(uint8_t*)nextsurf[i]->pixels+y*nextsurf[i]->pitch,wh[0]*4)==(int)wh[0]*4;
+ if(ok&&ver<=2){ /* v1/v2: every non-empty surface pixel, then AX */
+  for(unsigned i=0;i<NSURF&&ok;i++) {
+   uint32_t wh[2];RD(wh,sizeof(wh));
+   if(!wh[0]&&!wh[1])continue;
+   if(wh[0]<640||wh[1]<480||wh[0]>4096||wh[1]>4096){ok=false;break;}
+   nextsurf[i]=SDL_CreateRGBSurfaceWithFormat(0,wh[0],wh[1],32,SDL_PIXELFORMAT_RGBA32);if(!nextsurf[i]){ok=false;break;}
+   SDL_SetSurfaceBlendMode(nextsurf[i],SDL_BLENDMODE_NONE);
+   for(unsigned y=0;y<wh[1];y++)RD((uint8_t*)nextsurf[i]->pixels+y*nextsurf[i]->pitch,wh[0]*4);
+  }
  }
- if(ok&&hdr[1]==2)ok=gzread(f,&nextanim,sizeof(nextanim))==sizeof(nextanim)&&ax_valid(&nextanim);
- if(ok){unsigned char extra;ok=gzread(f,&extra,1)==0&&gzeof(f);}
- if(gzclose(f)!=Z_OK)ok=false;
+ if(ok&&ver==3){ /* v3 (interim dev build): draw history + display frame; read
+                  * and discard so old saves stay loadable, then surfaces are
+                  * rebuilt by replaying the history below. */
+  uint32_t hn=0; RD(&hn,4);
+  struct img_hist_ent *h3=calloc(hn?hn:1,sizeof(*h3));
+  if(!h3){ok=false;} else {
+   for(unsigned i=0;i<hn&&i<IMG_HIST_MAX;i++){
+    RD(h3[i].name,sizeof(h3[i].name)); RD(&h3[i].dst,2); RD(&h3[i].x,2); RD(&h3[i].y,2);
+   }
+   uint32_t dflag=0; RD(&dflag,4);
+   if(dflag)for(int y=0;y<480&&ok;y++){uint8_t px[640*4];RD(px,sizeof(px));}
+   if(hn>IMG_HIST_MAX)hn=IMG_HIST_MAX;
+   for(unsigned i=0;i<hn&&i<IMG_HIST_MAX;i++){
+    draw_image(h3[i].name,h3[i].dst,h3[i].x,h3[i].y); /* rebuild layers */
+   }
+   free(h3);
+  }
+ }
+ if(ok&&ver==4){ /* v4: same as v1/v2 pixel layout */
+  for(unsigned i=0;i<NSURF&&ok;i++) {
+   uint32_t wh[2];RD(wh,sizeof(wh));
+   if(!wh[0]&&!wh[1])continue;
+   if(wh[0]<640||wh[1]<480||wh[0]>4096||wh[1]>4096){ok=false;break;}
+   nextsurf[i]=SDL_CreateRGBSurfaceWithFormat(0,wh[0],wh[1],32,SDL_PIXELFORMAT_RGBA32);if(!nextsurf[i]){ok=false;break;}
+   SDL_SetSurfaceBlendMode(nextsurf[i],SDL_BLENDMODE_NONE);
+   for(unsigned y=0;y<wh[1];y++)RD((uint8_t*)nextsurf[i]->pixels+y*nextsurf[i]->pitch,wh[0]*4);
+  }
+ }
+ if(ok&&ver>=2){RD(&nextanim,sizeof(nextanim)); if(!ax_valid(&nextanim))ok=false;}
+ if(ok&&at!=raw_n)ok=false;
+rd_done:
+ free(raw);
  if(ok) {
-  st=next;animation=nextanim;for(unsigned i=0;i<NSURF;i++){if(surfaces[i])SDL_FreeSurface(surfaces[i]);surfaces[i]=nextsurf[i];nextsurf[i]=NULL;}
+  load_clear_fx();
+  st=next;animation=nextanim;
+  if(ver==1||ver==2||ver==4){
+   for(unsigned i=0;i<NSURF;i++){if(surfaces[i])SDL_FreeSurface(surfaces[i]);surfaces[i]=nextsurf[i];nextsurf[i]=NULL;}
+  }
   for(int i=0;i<5;i++)audio_stop(i);
   choice_open=false;error_text[0]=0;
  }
@@ -739,23 +910,6 @@ int main(int argc,char **argv) {
    fprintf(stderr,"Cannot create save directory %s\n",save_dir);return 1;}}
 #endif
  char fontbuf[1200];if(!fontpath){snprintf(fontbuf,sizeof(fontbuf),"%s/Kosugi-Regular.ttf",data_dir);fontpath=fontbuf;}
- #ifdef __SWITCH__
-  /* Full-NSP: log unconditionally to HOS SaveData (sdmc may be absent).
-   * Homebrew NRO: only when sdmc:/switch/KAWAXP/kawaxp-debug.flag exists.
-   * stderr already points at the sdmc step log from main-enter; duplicate
-   * the important notes there too so a failing NSP leaves save-side trace. */
-  {extern int switch_save_active;
-   bool want_log=switch_save_active!=0;
-   if(!want_log){char fp[1200];snprintf(fp,sizeof(fp),"%s/kawaxp-debug.flag",data_dir);
-    FILE*fk=fopen(fp,"rb");if(fk){fclose(fk);want_log=true;}}
-   if(want_log){
-    char lp[1200];snprintf(lp,sizeof(lp),"%s/kawaxp.log",save_dir);
-    FILE*lf=fopen(lp,"w");if(lf){
-     fprintf(lf,"KAWAXP log (sdmc:%s)\n",save_dir);
-     fclose(lf);}
-   }
-  }
- #endif
 if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER)||kawa_text_init()){fprintf(stderr,"SDL: %s\n",SDL_GetError());return 1;}
 #ifdef __SWITCH__
  /* Switch SDL2 runs fullscreen at the console resolution (handheld 1280x720 /

@@ -15,15 +15,51 @@ static SDL_Surface *background[2],*parts;
 static bool occupied[40],valid[40],editing;
 static char descriptions[40][512],memo[256];
 static void path_for(char *p,size_t n,unsigned slot,const char *ext){snprintf(p,n,"%s/slot%u.%s",save_dir,slot,ext);}
+/* Inflate the head of a gzip KWS file into buf (at most buflen bytes); the
+ * file is opened by the caller.  Returns bytes produced (may be < buflen at
+ * EOF), or 0 on failure. */
+static size_t kws_peek(FILE *f, unsigned char *buf, size_t buflen){
+ fseek(f,0,SEEK_END); long fsz=ftell(f); fseek(f,0,SEEK_SET);
+ if(fsz<=0)return 0;
+ unsigned char *gz=malloc((size_t)fsz); if(!gz)return 0;
+ bool ok=fread(gz,1,(size_t)fsz,f)==(size_t)fsz;
+ size_t outn=0;
+ if(ok){
+  z_stream s; memset(&s,0,sizeof(s));
+  if(inflateInit2(&s,15+16)==Z_OK){
+   s.next_in=gz; s.avail_in=(uInt)fsz;
+   s.next_out=buf; s.avail_out=(uInt)buflen;
+   int r=inflate(&s,Z_NO_FLUSH);
+   if(r==Z_OK||r==Z_STREAM_END)outn=buflen-s.avail_out;
+   inflateEnd(&s);
+  }
+ }
+ free(gz);
+ return outn;
+}
 bool save_ui_kind(unsigned kind){return kind==38||kind==45||kind==46;}
 void save_ui_scan(void){
  for(unsigned i=0;i<40;i++){
-  char path[1200];path_for(path,sizeof(path),i,"kws");struct stat sb;
+  /* v4 segmented saves live in slot%u.kws.0; legacy single-file slot%u.kws
+   * still supported. */
+  char path[1200];struct stat sb;
+  snprintf(path,sizeof(path),"%s/slot%u.kws.0",save_dir,i);
   occupied[i]=stat(path,&sb)==0;valid[i]=false;descriptions[i][0]=0;
+  if(!occupied[i]){path_for(path,sizeof(path),i,"kws");occupied[i]=stat(path,&sb)==0;}
   if(!occupied[i])continue;
-  gzFile f=gzopen(path,"rb");uint32_t h[4];struct state saved;
-  if(f){valid[i]=gzread(f,h,sizeof(h))==sizeof(h)&&h[0]==0x3153574b&&(h[1]==1||h[1]==2)&&h[2]==sizeof(saved)&&h[3]==NSURF&&
-    gzread(f,&saved,sizeof(saved))==sizeof(saved)&&saved.waiting==1&&memchr(saved.text,0,sizeof(saved.text));gzclose(f);}
+  FILE *rf=fopen(path,"rb");if(!rf){continue;}
+  unsigned char *head=malloc(sizeof(uint32_t)*4+sizeof(struct state));
+  if(!head){fclose(rf);continue;}
+  size_t hn=kws_peek(rf,head,sizeof(uint32_t)*4+sizeof(struct state)); fclose(rf);
+  struct state saved; memset(&saved,0,sizeof(saved));
+  if(hn>=sizeof(uint32_t)*4+sizeof(struct state)){
+   uint32_t h[4]; memcpy(h,head,sizeof(h));
+   memcpy(&saved,head+sizeof(h),sizeof(saved));
+   valid[i]=h[0]==0x3153574b&&h[1]>=1&&h[1]<=4&&h[2]==sizeof(saved)&&
+     (h[1]<=2||h[1]==4?h[3]==NSURF:1)&&
+     saved.waiting==1&&memchr(saved.text,0,sizeof(saved.text));
+  }
+  free(head);
   if(!valid[i]){snprintf(descriptions[i],512,"データを読み込めません");continue;}
   char date[32]="",text[256];struct tm t;if(localtime_r(&sb.st_mtime,&t))strftime(date,sizeof(date),"%m/%d %H:%M",&t);
   snprintf(text,sizeof(text),"%.240s",saved.text);

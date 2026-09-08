@@ -11,11 +11,11 @@
  */
 #pragma once
 
-/* Non-zero when the title RomFS was mounted ("romfs:/") and data_dir points
+/* Non-zero when the title RomFS was mounted ("romfs:") and data_dir points
  * into it. */
 extern int switch_romfs_active;
 
-/* Non-zero when HOS SaveData was mounted as "save:/" and save_dir points
+/* Non-zero when HOS SaveData was mounted as "save:" and save_dir points
  * there.  When zero (homebrew NRO / mount failure) saves go to the SD card
  * as in the legacy layout. */
 extern int switch_save_active;
@@ -26,6 +26,14 @@ extern int switch_save_active;
 void switch_hos_init(char *data_dir, size_t data_dir_sz,
                      char *save_dir, size_t save_dir_sz);
 
-/* Commit pending HOS SaveData writes (no-op when save:/ is not active).
+/* Commit pending HOS SaveData writes (no-op when save: is not active).
  * Cheap and idempotent; call after closing every save file. */
 void switch_hos_commit(void);
+
+/* Native HOS SaveData large-file IO: fsdev stdio auto-extend fails past
+ * ~1.5MB, but a file pre-created at its final size and written through the
+ * FsFileSystem API in small chunks works for multi-MB saves.  rel is a path
+ * inside the save root like "slot0.kws".  Returns 0 on success. */
+int switch_hos_save_write(const char *rel, const void *data, size_t len);
+int switch_hos_save_read(const char *rel, void *buf, size_t cap, size_t *out_len);
+int switch_hos_save_remove(const char *rel);

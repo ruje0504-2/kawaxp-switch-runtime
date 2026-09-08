@@ -274,8 +274,10 @@ static void util(mes_parameter_list p) {
   for(unsigned k=400;k<440;k++)if(st.flag[k]==1)enabled[4]=true;
   // KWS saves are independent of the original PC save-exists flag.
   for(unsigned k=0;k<100&&!enabled[1];k++){
-   char path[1200];snprintf(path,sizeof(path),"%s/slot%u.kws",save_dir,k);
-   FILE *f=fopen(path,"rb");if(f){fclose(f);enabled[1]=true;}
+   char path[1200];
+   snprintf(path,sizeof(path),"%s/slot%u.kws.0",save_dir,k);
+   FILE *f=fopen(path,"rb");if(!f){snprintf(path,sizeof(path),"%s/slot%u.kws",save_dir,k);f=fopen(path,"rb");}
+   if(f){fclose(f);enabled[1]=true;}
   }
   unsigned c=0;const char *items[6];
   for(unsigned k=0;k<6;k++)if(enabled[k]){items[c]=titles[k];menu_nums[c++]=tno[k];}
