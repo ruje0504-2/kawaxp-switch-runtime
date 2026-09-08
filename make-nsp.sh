@@ -7,7 +7,7 @@
 #   - ~/.switch/prod.keys 存在（hacbrewpack 需要）
 #   - ~/bin/hacbrewpack(.real) 存在
 #   - 本脚本所在工程需已 ninja 构建 runtime-switch（见 ../ba/work/runtime-switch）
-#   - assets/kawaxp-icon.jpg（NSP 图标）
+#   - assets/kawaxp-icon.png（NSP 图标，源自 title-preview.zh-CN.png）
 #   - 游戏数据取自 switch-package/KAWAXP/（*.ARC/*.AWF + 字体，有版权不入库）
 #
 # 用法: ./make-nsp.sh [输出路径, 默认 ./kawaxp-0100E6B2B3E50000.nsp]
@@ -15,7 +15,7 @@ set -e
 cd "$(dirname "$0")"
 
 TITLE_ID="0100E6B2B3E50000"     # 0100 + 河原崎家 UTF-8 前4字节(E6B2B3E5) + 0000
-TITLE_NAME="河原崎家の一族"
+TITLE_NAME="河原崎家的一族"
 PUBLISHER="elf"
 OUT="${1:-$PWD/$TITLE_ID.nsp}"
 WS="$PWD"
@@ -204,8 +204,8 @@ cat > "$TMP/npdm.json" <<EOF
 EOF
 /opt/devkitpro/tools/bin/npdmtool "$TMP/npdm.json" "$TMP/exefs/main.npdm"
 
-echo "[3/5] icon（assets/kawaxp-icon.jpg -> 256x256 control icon）"
-python3 - "$WS/assets/kawaxp-icon.jpg" "$TMP/control/icon_AmericanEnglish.dat" <<'PYEOF'
+echo "[3/5] icon（assets/kawaxp-icon.png -> 256x256 control icon）"
+python3 - "$WS/assets/kawaxp-icon.png" "$TMP/control/icon_AmericanEnglish.dat" <<'PYEOF'
 from PIL import Image
 import sys
 im = Image.open(sys.argv[1]).convert('RGB')
