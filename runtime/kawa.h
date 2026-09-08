@@ -48,6 +48,11 @@ extern unsigned vm_last_menu_addr(void);
 extern void vm_slot_menu(bool save); /* engine save/load slot menu (keys/smoke) */
 uint32_t ev(struct mes_expression *e);
 void draw_image(const char *name,unsigned dst,int x,int y);
+struct cg; /* from ai5/cg.h */
+/* Decode a Han-localized image at {data_dir}/img-trans/<base>.png if present
+ * (returns ref=1 cg), else NULL so callers fall back to the ARC entry.
+ * Shared by draw_image and the engine UI loaders (save_ui/scene_ui/extras_ui). */
+struct cg *png_override_load(const char *name);
 void copy_rect(int sx,int sy,int ex,int ey,unsigned src,int dx,int dy,unsigned dst,bool mask);
 void fill_rect(int x,int y,int ex,int ey,unsigned dst,uint32_t color);
 void frontend_present(void);

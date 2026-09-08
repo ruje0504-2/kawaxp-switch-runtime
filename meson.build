@@ -36,6 +36,9 @@ if get_option('runtime')
     effect_test = executable('effects-test', ['tests/effects_test.c'] + effect_src,
                              dependencies: runtime_deps, c_args: ['-D_DEFAULT_SOURCE'])
     test('PC effect state machines and pixels', effect_test)
+    # Requires the user's original game archives; run manually with GAME_DIR REPORT_DIR.
+    executable('credits-test', ['tests/credits_test.c'] + effect_src,
+               dependencies: runtime_deps, c_args: ['-D_DEFAULT_SOURCE'])
 
   endif
 endif

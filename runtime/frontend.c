@@ -289,8 +289,8 @@ void copy_rect(int sx,int sy,int ex,int ey,unsigned src,int dx,int dy,unsigned d
  if(temp)SDL_FreeSurface(temp);
 }
 /* 汉化图覆盖：{data_dir}/img-trans/<basename>.png 若存在并能解码则返回之，否则 NULL。
- * 只在 draw_image(剧情/标题/菜单等经脚本贴图的图)里用；错误一律静默回退 ARC。 */
-static struct cg *png_override_load(const char *resource)
+ * 供 draw_image 与各引擎 UI loader(save/scene/extras)共用；找不到即回退 ARC。 */
+struct cg *png_override_load(const char *resource)
 {
  /* build <base> without final extension */
  char base[256];

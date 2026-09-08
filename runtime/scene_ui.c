@@ -16,10 +16,9 @@ bool scene_ui_rect(unsigned v,SDL_Rect *r){
  return true;
 }
 static SDL_Surface *load(const char *name){
- struct archive_data *d=archive_get(cg_arc,name);
- if(!d){fail("Missing scene UI %s",name);return NULL;}
- struct cg *c=cg_load_arcdata(d);archive_data_release(d);
- if(!c){fail("Decode scene UI %s",name);return NULL;}
+ struct cg *c=png_override_load(name);
+ if(!c){struct archive_data *d=archive_get(cg_arc,name);if(d){c=cg_load_arcdata(d);archive_data_release(d);}}
+ if(!c){fail("Missing scene UI %s",name);return NULL;}
  SDL_Surface *s=SDL_CreateRGBSurfaceWithFormat(0,c->metrics.w,c->metrics.h,32,SDL_PIXELFORMAT_RGBA32);
  if(s){for(unsigned y=0;y<c->metrics.h;y++)memcpy((Uint8*)s->pixels+y*s->pitch,c->pixels+y*c->metrics.w*4,c->metrics.w*4);SDL_SetSurfaceBlendMode(s,SDL_BLENDMODE_NONE);}
  cg_free(c);if(!s)fail("Allocate scene UI");return s;

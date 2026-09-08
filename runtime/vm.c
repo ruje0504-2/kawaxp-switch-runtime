@@ -246,10 +246,21 @@ static void util(mes_parameter_list p) {
   case 5:case 6:copy_rect(0,0,639,479,1,0,0,0,false);break;
  case 7:fail("Util 7 transition not yet implemented");break;
  case 8:if(frontend_ppf_start(par(p,1),par(p,2),par(p,3),par(p,4))){st.waiting=3;st.sys[255]=SDL_GetTicks();}break;
- case 24: { /* util24 anim_wait: mode 4 = show staged image (title_bg/CG),
-            * 4th arg 1 = fade it in from black (AI.exe 0x43d3e0 family). */
-   unsigned mode=par(p,1);
+ case 24: { /* util24 edits the PC transition task list (43d3e0).
+            * Mode 1 removes matching tasks (44fbd0), it is NOT an AX wait.
+            * This runtime executes staged tasks immediately, so no queue remains
+            * for mode 1 to remove. Anim command 3 is the separate blocking API. */
+   unsigned mode=par(p,1),unit=par(p,2);
    if(mode==4){
+    if(unit==10){
+     /* 43ff8e -> vtable+8 -> 409590: resume bank 0, cell=arg4.
+      * CREDITS uses cells 0/1/2 for reveal/swirl/elf. In particular, 1
+      * is a CELL NUMBER, not a fade flag. Do not copy or darken any page,
+      * and do not block: the following util48 supplies the display time. */
+     if(st.var[14]==0&&!ax_control(&animation,1,0,par(p,4)))
+      fail("Invalid staged AX cell %u",par(p,4));
+     break;
+    }
     /* args: (id,4,page,"file",flag): flag at index 4 (index 3 is the string) */
     bool fi=vector_length(p)>4&&par(p,4)==1;
     if(fi&&frontend_fadein_start()){st.waiting=3;st.sys[255]=SDL_GetTicks()+600;break;}
@@ -301,7 +312,7 @@ static void util(mes_parameter_list p) {
  case 44:if(getenv("KAWA_FLAGDUMP")){unsigned n=0;for(unsigned v=1;v<=123;v++)if(extras_enabled(44,v))n++;note("EXTRAS44 unlocked=%u/123",n);}vm_album_menu();break;
  case 45:st.var[18]=1+(rand()&1);break;
  case 46:st.waiting=1;break; // page-hold until advance (CG album etc.)
- case 48: { // timed wait, arg = 1/20 s ticks (credits pacing: 4000/20 etc.)
+ case 48: { // timed wait, arg = 20 ms ticks (credits pacing: 4000/20 etc.)
   unsigned ticks=par(p,1);
   if(ticks){st.waiting=3;st.sys[255]=SDL_GetTicks()+ticks*AX_TICK_MS;}
   else st.waiting=1;
