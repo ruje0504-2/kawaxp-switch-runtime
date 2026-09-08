@@ -27,9 +27,7 @@ static const char *screenshot;
 static char status[256];static Uint32 status_until;
 static bool ff_hold; /* fast-forward while controller X / keyboard x held (not in smoke) */
 /* Debug bisect switches: enabled by a flag file in data_dir (no env on Switch). */
-static bool flag_on(const char*n){char p[1200];snprintf(p,sizeof(p),"%s/%s",data_dir,n);FILE*f=fopen(p,"rb");if(!f)return false;fclose(f);return true;}
-static int dbg_noax,dbg_notext;
-int dbg_noaudio,dbg_audiosync; /* bisect: see audio.c */
+/* (debug bisect flag switches removed 2026-09-08 per user request) */
 static bool hide_msg;
 static bool gfx_dirty=true;
 void frontend_refresh(void){gfx_dirty=true;}
@@ -214,7 +212,7 @@ void animation_update(unsigned elapsed_ms) {
  animation.phase_ms+=elapsed_ms;
  while(animation.phase_ms>=AX_TICK_MS) {
   animation.phase_ms-=AX_TICK_MS;
-  if(!dbg_noax)if(!ax_tick(&animation,animation_draw,NULL)){fail("Malformed AX program in %s",animation.name);break;}
+  if(!ax_tick(&animation,animation_draw,NULL)){fail("Malformed AX program in %s",animation.name);break;}
  }
  if(st.waiting==4&&!ax_waiting(&animation))st.waiting=0;
 }
@@ -264,29 +262,6 @@ void set_choices(const char **items,unsigned count,int kind) {
 static SDL_Surface *msg_cache;
 static char msg_key[1024];
 static uint32_t msg_col;
-/* ---- text backlog (message history) ---- */
-#define HIST_MAX 256
-#define HIST_LEN 1024
-static char history[HIST_MAX][HIST_LEN];
-static unsigned hist_count, hist_head; /* count written; head = next write slot */
-static bool hist_mode;                 /* full-screen history view */
-static int hist_scroll;                /* 0 = newest at bottom */
-static bool hist_avail(void){return hist_count>0;}
-static void hist_add(const char *s){
- if(!s||!s[0])return;
- /* skip pure repeats of the last line (engine re-commits same text) */
- if(hist_count && !strcmp(history[(hist_head+HIST_MAX-1)%HIST_MAX], s))return;
- snprintf(history[hist_head],HIST_LEN,"%s",s);
- hist_head=(hist_head+1)%HIST_MAX;
- if(hist_count<HIST_MAX)hist_count++;
- if(hist_scroll)hist_scroll++; /* keep view pinned to bottom while open */
-}
-static const char *hist_line(int idx){ /* 0 = oldest .. count-1 = newest */
- return history[(hist_head+HIST_MAX-hist_count+idx)%HIST_MAX];
-}
-static void hist_enter(void){if(hist_avail()){hist_mode=true;hist_scroll=0;gfx_dirty=true;}}
-static void hist_leave(void){hist_mode=false;gfx_dirty=true;}
-void frontend_hist_note(void){ if(st.text[0])hist_add(st.text); } /* commit-time hook */
 static SDL_Surface *msg_surface(int *w,int *h){
  if(msg_cache&&!strcmp(msg_key,st.text)&&msg_col==st.color){*w=600;*h=msg_cache->h;return msg_cache;}
  SDL_Surface*s0=kawa_text_render(font,st.text,600,0x000000);
@@ -343,8 +318,7 @@ void frontend_present(void) {
  if(!canvas)return;
  /* state-driven dirtiness */
  if(strcmp(last_msg,st.text)){
-  if(last_msg[0]&&!choice_open)hist_add(last_msg); /* the line we just finished showing */
-  snprintf(last_msg,sizeof(last_msg),"%s",st.text);gfx_dirty=true;}
+   snprintf(last_msg,sizeof(last_msg),"%s",st.text);gfx_dirty=true;}
  if(last_wait!=st.waiting){last_wait=st.waiting;gfx_dirty=true;}
  if(last_sel!=selected){last_sel=selected;gfx_dirty=true;}
  if(last_cho!=choice_open){last_cho=choice_open;gfx_dirty=true;}
@@ -394,7 +368,7 @@ void frontend_present(void) {
     text_at(labels[start+j],28,y+2,sel?0xffe9a0:0xffffff,584);
    }
   } else {
-   int tw=600,th=0;SDL_Surface*ms=dbg_notext?NULL:msg_surface(&tw,&th);
+   int tw=600,th=0;SDL_Surface*ms=msg_surface(&tw,&th);
    if(ms){SDL_Rect to={28,392,0,0};SDL_BlitSurface(ms,NULL,canvas,&to);}
   }
  }
@@ -403,6 +377,22 @@ void frontend_present(void) {
    unsigned results[6];unsigned count=choice_count<6?choice_count:6;
    for(unsigned i=0;i<count;i++)results[i]=vm_menu_value(i);
    title_ui_draw(surfaces[7],canvas,results,count,selected);
+  } else if(vm_choice_kind()==43){
+   /* scene replay (PC util43 paged): sc_bg backdrop + one event's 5 part cards
+    * + 前の/次の/戻る. Card art pending sc_pt mapping; text plates for now. */
+   extern unsigned scene_page;
+   if(surfaces[1]){SDL_Rect fr={0,0,640,480};SDL_BlitSurface(surfaces[1],&fr,canvas,NULL);}
+   char t[40];snprintf(t,sizeof(t),"イベント %02u / 08",scene_page+1);
+   text_at(t,20,20,0x9fc4ff,300);
+   for(unsigned k=0;k<choice_count;k++){
+    SDL_Rect r;unsigned value=vm_menu_value(k);
+    if(!extras_rect(43,value,&r))continue;
+    bool sel=(k==selected);
+    bool en=extras_enabled(43,value);
+    SDL_FillRect(canvas,&r,rgb(canvas,sel?0x2a3a55:(en?0x1a2a3a:0x0c1118)));
+    uint32_t col=sel?0xffe9a0:(en?0xffffff:0x4a4a55);
+    text_at(labels[k],r.x+6,r.y+((value>=1&&value<=5)?(r.h-18)/2:3),col,r.w-12);
+   }
   } else if(vm_choice_kind()==41||vm_choice_kind()==42||vm_choice_kind()==44){
    extras_draw(canvas,vm_choice_kind(),vm_menu_value(selected));
   } else {
@@ -423,33 +413,6 @@ void frontend_present(void) {
  }
  if(status_until>SDL_GetTicks()){SDL_Rect r={0,0,640,34};SDL_FillRect(canvas,&r,rgb(canvas,0x12212d));text_at(status,12,4,0xffffff,610);}
  if(ff_hold&&!smoke&&(st.waiting==1||st.waiting==3)){SDL_Rect r={572,4,64,20};SDL_FillRect(canvas,&r,rgb(canvas,0x10241c));text_at(">>",578,5,0x7dffa0,50);}
- if(hist_mode) { /* ---- full-screen text history ---- */
-  SDL_FillRect(canvas,NULL,rgb(canvas,0x000000));
-  SDL_Rect tbar={0,0,640,28};SDL_FillRect(canvas,&tbar,rgb(canvas,0x1a2033));
-  text_at("文字履歴 — 戻る:B / ↓:新しい  ↑:古い",10,5,0x9fc4ff,620);
-  unsigned total=hist_count;
-  int newest=(int)total-1-hist_scroll;      /* index of the newest visible line */
-  if(newest<0)newest=0;
-  /* each entry may wrap to several rendered rows, so page by actual measured
-   * pixel height instead of a fixed stride (long lines were overlapping) */
-  int avail=480-28-22; /* under the title bar, above the bottom bar */
-  int first=newest, used=0;
-  while(first>0){
-   SDL_Surface*m=kawa_text_render(font,hist_line(first-1),616,0xdddddd);
-   int h=m?m->h:24; if(m)SDL_FreeSurface(m);
-   if(used+h>avail)break;
-   used+=h+4; first--;
-  }
-  int y=30;
-  for(int idx=first;idx<=newest;idx++){
-   SDL_Surface*m=kawa_text_render(font,hist_line(idx),616,0xdddddd);
-   if(m){SDL_Rect d={12,y,0,0};SDL_BlitSurface(m,NULL,canvas,&d);
-    y+=m->h+4; SDL_FreeSurface(m);}
-  }
-  SDL_Rect hbar={0,478-14,640,14};SDL_FillRect(canvas,&hbar,rgb(canvas,0x1a2033));
-  {char b[64];snprintf(b,sizeof(b),"%d/%u",newest+1,total);
-   text_at(b,12,479-12,0x88aadd,600);}
- }
 SDL_UpdateTexture(texture,NULL,canvas->pixels,canvas->pitch);
  SDL_RenderClear(renderer);SDL_RenderCopy(renderer,texture,NULL,NULL);SDL_RenderPresent(renderer);
 }
@@ -504,12 +467,124 @@ int load_state(unsigned slot) {
  char msg[64];snprintf(msg,sizeof(msg),ok?"Loaded slot %u":"Save damaged or incompatible (slot %u)",slot);
  notify_status(msg);note("LOADSAVE %s %s",ok?"OK":"FAIL",path);return ok;
 }
-static void confirm(void) {if(hist_mode){hist_leave();return;}if(st.waiting==3){extern void frontend_xfade_skip(void);frontend_xfade_skip();st.waiting=0;}else if(st.waiting==2){vm_choose(selected);if(st.waiting!=2)choice_open=false;}else vm_advance();}
+/* ---- engine-menu grid navigation (layout rows per kind) ----
+ * 41 sound test : 8 rows x 2 (14 tracks + 停止/タイトルに戻る)
+ * 42 endings    : rows {4,5,5,5,1} (19 cards + 戻る)
+ * 43 scene      : rows {5,3} (5 part plates + 前/次/戻る)
+ * 44 album      : 5 rows x 4 (16 cells + 4 controls)
+ * 2/37/38/45/46: single column. dx in-row, dy between rows, clamped. */
+static unsigned nav_step(unsigned s,int dx,int dy){
+ unsigned n=choice_count; if(!n)return s;
+ unsigned kind=vm_choice_kind();
+ if(kind==2||kind==37||kind==38||kind==45||kind==46){
+  if(dx)return s;
+  int t=(int)s+dy; if(t<0)t=0; if(t>=(int)n)t=(int)n-1; return (unsigned)t;
+ }
+ unsigned rows,lens[8],i;
+ switch(kind){
+  case 41: rows=8; for(i=0;i<8;i++)lens[i]=2; break;
+  case 42: rows=5; lens[0]=4;lens[1]=5;lens[2]=5;lens[3]=5;lens[4]=1; break;
+  case 43: rows=2; lens[0]=5;lens[1]=3; break;
+  case 44: rows=5; for(i=0;i<5;i++)lens[i]=4; break;
+  default: return s;
+ }
+ unsigned base[8];base[0]=0;for(i=1;i<rows;i++)base[i]=base[i-1]+lens[i-1];
+ unsigned total=base[rows-1]+lens[rows-1];
+ if(s>=total)s=total?total-1:0;
+ unsigned r=0; while(r+1<rows&&s>=base[r+1])r++;
+ unsigned c=s-base[r];
+ if(dy){
+  int rr=(int)r+dy; if(rr<0)rr=0; if(rr>=(int)rows)rr=(int)rows-1;
+  unsigned cc=c<lens[rr]?c:lens[rr]-1;
+  return base[rr]+cc;
+ }
+ if(dx){
+  int cc=(int)c+dx; if(cc<0)cc=0; if(cc>=(int)lens[r])cc=(int)lens[r]-1;
+  return base[r]+(unsigned)cc;
+ }
+ return s;
+}
+/* L/R shoulder: page flip in album (44) / scene (43); elsewhere keep the
+ * save/load menu shortcuts. */
+static void shoulder_page(bool next){
+ if(choice_open&&st.waiting==2){
+  unsigned kind=vm_choice_kind();
+  if(kind==44||kind==43){
+   unsigned want=next?EXTRA_NEXT:EXTRA_PREV;
+   for(unsigned i=0;i<choice_count;i++)if(vm_menu_value(i)==want){vm_choose(i);return;}
+   return;
+  }
+ }
+ if(next)vm_slot_menu(false);else vm_slot_menu(true);
+}
+unsigned vm_menu_nav(unsigned sel,int dx,int dy){
+ unsigned n=choice_count; if(!n)return sel;
+ unsigned kind=vm_choice_kind();
+ unsigned cur=sel>=n?n-1:sel;
+ unsigned first=nav_step(cur,dx,dy);
+ /* engine extra menus: never rest the cursor on unactivated items */
+ if((kind==41||kind==42||kind==43||kind==44)&&(dx||dy)){
+  unsigned gridn=0;
+  switch(kind){case 41:gridn=14;break;case 42:gridn=19;break;case 43:gridn=5;break;case 44:gridn=16;break;}
+  if(gridn>n)gridn=n;
+  unsigned probe=first;
+  for(unsigned steps=0;steps<=n;steps++){
+   if(extras_enabled(kind,vm_menu_value(probe)))return probe;
+   unsigned nx=nav_step(probe,dx,dy);
+   if(nx==probe)break;      /* edge of this axis */
+   probe=nx;
+  }
+  /* no enabled item along that axis: jump to the nearest enabled item in the
+   * same section (grid vs control-button row), scanning forward */
+  unsigned lo=0,hi=n;
+  if(first<gridn)hi=gridn; else lo=gridn;
+  if(hi>choice_count)hi=choice_count;
+  if(lo>=hi)return sel;
+  unsigned from=first<hi?first:lo;
+  /* keep scanning in the SAME direction (wrap inside the section) so a left
+   * press never jumps right and vice versa */
+  int sgn=dy? (dy>0?1:-1) : (dx>0?1:-1);
+  unsigned span=hi-lo;
+  for(unsigned k=1;k<span;k++){
+   int off=((int)(from-lo)+sgn*(int)k)%(int)span;
+   if(off<0)off+=(int)span;
+   unsigned idx=lo+(unsigned)off;
+   if(extras_enabled(kind,vm_menu_value(idx)))return idx;
+  }
+  return sel;
+ }
+ return first;
+}
+/* B in an engine menu = its 戻る/タイトル item, else direct close. */
+void vm_menu_cancel(void){
+ unsigned kind=vm_choice_kind(),want;
+ switch(kind){
+  case 41: want=15; break;              /* タイトルに戻る */
+  case 42: case 43: case 44: want=0; break; /* 戻る / タイトルへ */
+  case 38: case 45: case 46: want=~0u; break;
+  default: return;                      /* 2 / 37 have no cancel */
+ }
+ for(unsigned i=0;i<choice_count;i++)if(vm_menu_value(i)==want){vm_choose(i);return;}
+ if(choice_open){choice_open=false;st.waiting=1;}
+}
+/* B while a CG album photo is showing (ALLPIC.MES util46 hold): leave the
+ * photo back to the album menu; never chain to the next unlocked group. */
+static void album_back(void){
+ if(st.waiting==1&&st.ip.script&&!strcasecmp(st.ip.script,"ALLPIC.MES")){
+  /* leave the CG photo: reopen the album menu (ALLPIC.MES @41 Util44) */
+  st.text[0]=0;st.waiting=0;
+  vm_jump_at("ALLPIC.MES",0x41);
+  gfx_dirty=true;
+  return;
+ }
+ hide_msg=!hide_msg;gfx_dirty=true;
+}
+static void confirm(void) {if(st.waiting==3){extern void frontend_xfade_skip(void);frontend_xfade_skip();st.waiting=0;}else if(st.waiting==2){vm_choose(selected);if(st.waiting!=2)choice_open=false;}else vm_advance();}
 /* Share the rendering geometry with pointer input; outside taps are not confirms. */
 static int choice_at(int x,int y) {
  if(!choice_open||st.waiting!=2)return -1;
  unsigned kind=vm_choice_kind();
- if(kind==41||kind==42||kind==44){
+ if(kind==41||kind==42||kind==43||kind==44){
   for(unsigned i=0;i<choice_count;i++){
    SDL_Rect r;unsigned value=vm_menu_value(i);
    if(extras_enabled(kind,value)&&extras_rect(kind,value,&r)&&x>=r.x&&x<r.x+r.w&&y>=r.y&&y<r.y+r.h)return (int)i;
@@ -536,7 +611,6 @@ static int choice_at(int x,int y) {
  return (int)base+(y-y0)/lh;
 }
 static void pointer_confirm(int x,int y) {
- if(hist_mode){hist_leave();return;}
  if(st.waiting==2){int i=choice_at(x,y);if(i<0)return;selected=(unsigned)i;}
  confirm();
 }
@@ -558,15 +632,16 @@ int main(int argc,char **argv) {
  if(!save_dir[0])snprintf(save_dir,sizeof(save_dir),"%s/kawaxp-saves",data_dir);
  if(mkdir(save_dir,0755)&&errno!=EEXIST){fprintf(stderr,"Cannot create save directory %s\n",save_dir);return 1;}
  char fontbuf[1200];if(!fontpath){snprintf(fontbuf,sizeof(fontbuf),"%s/Kosugi-Regular.ttf",data_dir);fontpath=fontbuf;}
- dbg_noax=flag_on("noax.flag");dbg_notext=flag_on("notext.flag");
- dbg_noaudio=flag_on("noaudio.flag");dbg_audiosync=flag_on("audiosync.flag");
  #ifdef __SWITCH__
-  /* redirect diagnostics to a log file on the SD card (read after run) */
-  {char lp[1200];snprintf(lp,sizeof(lp),"%s/kawaxp.log",save_dir);
-   FILE*lf=fopen(lp,"w");if(lf){dup2(fileno(lf),2);setvbuf(stderr,NULL,_IOLBF,0);}
-   fprintf(stderr,"KAWAXP log start %s\n",lp);
-   fprintf(stderr,"DBG noax=%d notext=%d noaudio=%d audiosync=%d\n",dbg_noax,dbg_notext,dbg_noaudio,dbg_audiosync);}
-#endif
+  /* Diagnostics no longer go to an SD log file (user request 2026-09-08: do not
+   * generate any .log). stderr stays unattached on Switch. To re-enable the
+   * kawaxp.log dump, restore this block:
+   *   {char lp[1200];snprintf(lp,sizeof(lp),"%s/kawaxp.log",save_dir);
+   *    FILE*lf=fopen(lp,"w");if(lf){dup2(fileno(lf),2);setvbuf(stderr,NULL,_IOLBF,0);}
+   *    fprintf(stderr,"KAWAXP log start %s\n",lp);
+   *    fprintf(stderr,"DBG noax=%d notext=%d noaudio=%d audiosync=%d\n",dbg_noax,dbg_notext,dbg_noaudio,dbg_audiosync);}
+   */
+ #endif
 if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER)||kawa_text_init()){fprintf(stderr,"SDL: %s\n",SDL_GetError());return 1;}
 #ifdef __SWITCH__
  /* Switch SDL2 runs fullscreen at the console resolution (handheld 1280x720 /
@@ -612,6 +687,7 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
   for(unsigned i=130;i<=152;i++)st.flag[i]=1;
   for(unsigned i=200;i<=322;i++)st.flag[i]=1;
   for(unsigned i=1510;i<1524;i++)st.flag[i]=1;
+  for(unsigned i=401;i<=440;i++)st.flag[i]=1; /* scene replay parts */
  }
  frame_log = getenv("KAWA_FRAMELOG")!=NULL;
  const char *km=getenv("KAWA_MENU37");if(!km)km=getenv("KAWA_MENU");unsigned kawa37=km?strtoul(km,0,10):0;
@@ -651,18 +727,25 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
     switch(e.key.keysym.sym) {
     case SDLK_ESCAPE:running=false;break;
     case SDLK_RETURN:case SDLK_SPACE:
-     if(hist_mode){hist_leave();}else confirm();break;
+     confirm();break;
     case SDLK_UP:
-     if(hist_mode){if(hist_scroll< (int)hist_count-1)hist_scroll++;gfx_dirty=true;}
-     else if(selected&&choice_count){selected--;gfx_dirty=true;}break;
+     if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,0,-1);gfx_dirty=true;}
+     break;
     case SDLK_DOWN:
-     if(hist_mode){if(hist_scroll>0)hist_scroll--;gfx_dirty=true;}
-     else if(selected+1<choice_count){selected++;gfx_dirty=true;}break;
-    case SDLK_h:case SDLK_y:
-     if(hist_mode)hist_leave();else if(st.waiting==1||st.waiting==3)hist_enter();break;
+     if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,0,1);gfx_dirty=true;}
+     break;
+    case SDLK_LEFT:
+     if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,-1,0);gfx_dirty=true;}
+     break;
+    case SDLK_RIGHT:
+     if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,1,0);gfx_dirty=true;}
+     break;
     case SDLK_F5:vm_slot_menu(true);break;case SDLK_F9:vm_slot_menu(false);break;
     case SDLK_x:ff_hold=true;gfx_dirty=true;break;
-    case SDLK_b:if(hist_mode)hist_leave();else {hide_msg=!hide_msg;gfx_dirty=true;}break;
+    case SDLK_b:
+     if(choice_open&&st.waiting==2&&vm_choice_kind()!=2&&vm_choice_kind()!=37)vm_menu_cancel();
+     else album_back();
+     break;
     }
    }
    if(e.type==SDL_KEYUP&&(e.key.keysym.sym==SDLK_x)){ff_hold=false;gfx_dirty=true;}
@@ -674,37 +757,38 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
 #ifdef __SWITCH__
     switch(fb){
      case SDL_CONTROLLER_BUTTON_B:confirm();break;      /* printed A */
-     case SDL_CONTROLLER_BUTTON_A:if(hist_mode)hist_leave();else hide_msg=!hide_msg;gfx_dirty=true;break;  /* printed B */
+     case SDL_CONTROLLER_BUTTON_A: /* printed B */
+      if(choice_open&&st.waiting==2&&vm_choice_kind()!=2&&vm_choice_kind()!=37)vm_menu_cancel();
+      else album_back();
+      break;
      case SDL_CONTROLLER_BUTTON_Y:ff_hold=true;break;   /* printed X */
-     case SDL_CONTROLLER_BUTTON_BACK:
-      if(hist_mode)hist_leave();else if(st.waiting==1||st.waiting==3)hist_enter();break; /* printed - */
     }
 #else
     switch(fb){
      case SDL_CONTROLLER_BUTTON_A:confirm();break;
-     case SDL_CONTROLLER_BUTTON_B:if(hist_mode)hist_leave();else hide_msg=!hide_msg;gfx_dirty=true;break;
+     case SDL_CONTROLLER_BUTTON_B:
+      if(choice_open&&st.waiting==2&&vm_choice_kind()!=2&&vm_choice_kind()!=37)vm_menu_cancel();
+      else album_back();
+      break;
      case SDL_CONTROLLER_BUTTON_X:ff_hold=true;gfx_dirty=true;break;
-     case SDL_CONTROLLER_BUTTON_BACK:
-     case SDL_CONTROLLER_BUTTON_Y:
-      if(hist_mode)hist_leave();else if(st.waiting==1||st.waiting==3)hist_enter();break;
     }
 #endif
     switch(fb){
      case SDL_CONTROLLER_BUTTON_START:running=false;break;
      case SDL_CONTROLLER_BUTTON_DPAD_UP:
-      if(hist_mode){ /* scroll toward older lines; at the oldest line, tap Up again to close */
-       if(hist_scroll < (int)hist_count-1)hist_scroll++;
-       else hist_leave();
-       gfx_dirty=true;
-      } else if(!choice_open&&(st.waiting==1||st.waiting==3))hist_enter(); /* short tap Up opens history */
-      else if(selected&&choice_count)selected--;
+      if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,0,-1);gfx_dirty=true;}
       break;
      case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-      if(hist_mode){if(hist_scroll>0)hist_scroll--;gfx_dirty=true;} /* scroll toward newest */
-      else if(selected+1<choice_count)selected++;
+      if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,0,1);gfx_dirty=true;}
       break;
-     case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:vm_slot_menu(true);break;
-     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:vm_slot_menu(false);break;
+     case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+      if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,-1,0);gfx_dirty=true;}
+      break;
+     case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+      if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,1,0);gfx_dirty=true;}
+      break;
+     case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:shoulder_page(false);break;
+     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:shoulder_page(true);break;
     }
    }
    if(e.type==SDL_CONTROLLERBUTTONUP){
@@ -730,7 +814,7 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
   Uint32 anim_now=SDL_GetTicks();animation_update(smoke?AX_TICK_MS:anim_now-anim_last);anim_last=anim_now;
   {extern void frontend_xfade_poll(void);frontend_xfade_poll();}
   if(st.waiting==3&&(smoke||(Sint32)(SDL_GetTicks()-st.sys[255])>=0))st.waiting=0;
-  if((ff_hold||getenv("KAWA_FF"))&&!smoke&&!hist_mode) { /* fast-forward: skip timed waits, auto-advance dialogue; stop at choices/menus */
+  if((ff_hold||getenv("KAWA_FF"))&&!smoke) { /* fast-forward: skip timed waits, auto-advance dialogue; stop at choices/menus */
    if(st.waiting==3){if(!getenv("KAWA_FFNOSKIP")){extern void frontend_xfade_skip(void);frontend_xfade_skip();}st.waiting=0;}
    else if(st.waiting==1)vm_advance();
   }
@@ -761,12 +845,6 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
  else want=(kk==37)?kawa37:(kk==38)?kawa38:(kk==41)?kawa41:(kk==42)?kawa42:(kk==43)?kawa43:(kk==44)?kawa44:(kk==45)?kawa45:(kk==46)?kawa46:0;unsigned pick=choice_count?(want<choice_count?want:choice_count-1):0;vm_choose(pick);if(st.waiting!=2)choice_open=false;}
   }
   if(smoke&&st.waiting==1) {
-   if(getenv("KAWA_HISTTEST")&&st.messages>=strtoul(getenv("KAWA_HISTTEST"),0,10)){
-    note("HISTTEST msg=%u count=%u avail=%d",st.messages,hist_count,hist_avail());
-    hist_enter();frontend_present();
-    if(screenshot){SDL_SaveBMP(canvas,screenshot);screenshot=NULL;}
-    hist_leave();break;
-   }
    if(st.messages>=(unsigned)smoke_messages) {if(!hold_ticks)break;hold_ticks--;}
    else {
     {static bool as_done=false; if(!as_done&&autosave_at&&st.messages>=autosave_at){as_done=true;note("AUTOSAVE open slot menu");vm_slot_menu(true);}}

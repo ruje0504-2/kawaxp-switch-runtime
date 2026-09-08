@@ -2,7 +2,108 @@
 
 ## 🎯 给 Codex 的当前任务清单（优先做）
 
-### 0. Switch 固定闪退 — 根因已定位并修复（2026-09-08 本会话，已验证）
+### 0. OVER 排除细化：仅禁エンディング鉴赏回放（2026-09-08 修订）
+- vm.c：新增 `ending_replay_flag`——在 util42(エンディング)菜单选中具体结局（非戻る）时置位，
+  vm_step 离开 OVER/CREDITS 脚本时清除；`in_replay_view()` 对 OVER 仅当 flag 为真才判为回放。
+- 效果：**真实流程的结局(overXX)允许存读档**；只有从エンディング鉴赏进入的回放 OVER 仍禁止。
+- 验证：编译干净、smoke PASS。NRO MD5 `58e716be`，已同步 Codex。
+
+### 0.1. 存读档仅限实际游戏流程（2026-09-08）
+- vm.c vm_slot_menu 增加 `in_replay_view()` 闸门：st.waiting==1（对白暂停）仍必须，且
+  当前脚本为 ALLPIC(图片鉴赏)/EVENT0X(场景回想)/OVERXX(结局)/CREDITS 时**禁止调出**存/读档
+  （L/R、F5/F9 等入口全部被挡）。标题ロード(util38)不经此函数，不受影响。
+- 边界说明：OVERXX 也含真实结局演出，结局过程中现亦不可调出存档（如需要结局存档请告知再放开）。
+- 验证：编译干净、smoke PASS。NRO MD5 `c2388831`，已同步 Codex。
+
+### 0.1. CG 图片浏览 B 返回 + 导航方向修正（2026-09-08 第二轮）
+- **CG 图片浏览**：ALLPIC.MES 播放中（waiting==1）B → 直接 `vm_jump_at("ALLPIC.MES",0x41)` 重开鉴赏菜单
+  （不再只是 advance；任何 A/Y/触屏都只在组内翻图，B 才是退出）。vm.c 导出 vm_jump_at。
+- **导航方向修正**：无激活项时的"就近跳跃"改为**沿原方向在区内环扫**——左键不再前跳到右侧远端
+  （用户例：结局 1 右到 9 后，9 按左能扫回 1）。
+- 验证：编译干净、smoke PASS；模拟部分解锁（仅 1/9 解锁）1→9→左回 1 正确。NRO MD5 `dfa328c4`，已同步 Codex。
+
+### 0.1. CG 鉴赏按键 + 导航落点修正（2026-09-08 第一轮）
+- **导航落点**：方向轴内无激活项时不再停在边界/原地，改跳**同区（网格区 vs 控制钮区）最近激活项**（向前环搜）。
+- **CG 鉴赏播放**：vm_choose44 任何选择（含連続再生 EXTRA_PLAY）var32[9] 恒置 1 → 单张播放结束
+  ALLPIC.MES 回菜单，**A/Y 快进都不再链跳到下一已解锁组**；
+  B 键在播放中（waiting==1 && ALLPIC.MES）→ var9=1 + advance 返回相册菜单（album_back()），平时仍是 hide_msg。
+- 验证：编译干净，smoke+roundtrip PASS，ALLPIC 可达（菜单 waiting=2）。NRO MD5 `5761ad37`，已同步 Codex。
+- 待实机：导航跳最近激活手感、CG 播放 A/B/Y 行为。
+
+### 0.1. 导航跳过未解锁项 + LR 翻页（2026-09-08）
+- vm_menu_nav 移动后若落点 disabled（41 曲未解锁/42 结局/43 段/44 CG 未激活，extras_enabled=false）
+  则继续同方向寻找可用项，整方向无可用则光标不动；几何层拆出 nav_step（行模型不变）。
+- LR 肩键：引擎菜单 kind44(相册)/kind43(场景) 打开时 = 翻页（上一页/下一页，复用菜单内 EXTRA_PREV/NEXT 项）；
+  其它场合保留原 L=存档菜单/R=读档菜单快捷。
+- 验证：host 编译、smoke+roundtrip PASS、场景选段正常；nav 几何单元测试通过（44 sel15↓→19=play 钮、43 sel7↑→2 正确）。
+- NRO MD5 `87f7ab6b`；已同步 Codex。待实机：跳过手感、LR 翻页。
+
+### 0.1. 引擎菜单按键：网格导航 + B 返回（2026-09-08）
+- frontend.c 新增 `vm_menu_nav(sel,dx,dy)`（按菜单视觉行模型移动，越界 clamp）与 `vm_menu_cancel()`。
+  行模型：41=8行×2（14曲+停止/タイトル戻る）；42={4,5,5,5,1}；43={5,3}；44=5行×4（16格+4钮）；2/37/38/45/46=单列。
+- 键盘/手柄：UP/DOWN=行内上下（经 nav），LEFT/RIGHT=水平移动（2/37 等单列无效），
+  printed B（Switch=A 物理键；host=B）=引擎菜单(41..46/38)返回/关闭（=该菜单戻る/タイトル项），kind2/37 不响应。
+- kind45/46/38 取消=~0u(戻る项)→waiting 回 1；41→タイトルに戻る(15)；42/43/44→戻る/タイトル(0)。
+- 验证：编译干净，smoke+roundtrip PASS，场景选段正常。NRO MD5 `67378d51`，已同步 Codex。
+- 待实机：41 两列/44 四列/42 卡片/43 名牌的左右上下手感、B 返回各界面。
+
+### 0.1. backlog 文字履历模块已删除（2026-09-08，逆向确认原版无此功能）
+- 逆向证据：AI.exe 全文件无 履歴/ヒストリー/バックログ/メッセージログ/ログ 字符串（UTF-8/SJIS/UTF-16 全试）；
+  mes-dump 全部 90+ 脚本 "履歴" 0 出现（メッセージ 仅一处剧情对白文本）→ **原版 PC 无文字履历**。
+- 删除内容（frontend.c/vm.c/kawa.h）：history 环形数组+HIST_MAX/LEN、hist_add/line/enter/leave/avail、
+  frontend_hist_note、full-screen 履歴绘制块、按键/手柄/触屏的履历开关与滚动分支
+  （十字键上/下、h/y、B/戻る、手柄 UP/DOWN/BACK/Y/-）、KAWA_HISTTEST 钩子、vm 0x22 commit 挂钩。
+- 还原：UP/DOWN 仅菜单导航；B/hide_msg 保留原语义；ff 快进条件去掉 !hist_mode。
+- NRO MD5 `dba08cca`；双端编译干净、smoke+存档往返 PASS；已同步 Codex。
+- 注意：blit_keyed() 仍未用（分支选项 selparts 遗留），本轮未动。
+
+### 0.1. 调试 flag 开关全部移除（2026-09-08 用户要求，含上条 log 关闭）
+- frontend.c/audio.c/kawa.h：删除 noax/notext/noaudio/audiosync 的 flag 文件机制与 DBG 打印；
+  逻辑还原为正常（AX 恒 tick、文本恒渲染、音频恒异步解码）。NRO MD5 `1b73830d`，已同步 Codex。
+- 上条：Switch 不再生成 kawaxp.log（frontend.c 重定向块删除，恢复法见注释）。
+
+### 0.1. 调试 .log 全部关闭（2026-09-08 用户要求）
+- frontend.c：删除 Switch 下 stderr→save_dir/kawaxp.log 的重定向块（不再生成任何 .log）。
+  stderr 在 Switch 上不接文件；恢复方法见注释（保留 DBG 行示例）。NRO MD5 `fbdb4412`，已同步 Codex。
+
+### 0.1. kind43 シーン：PC 语义分页选择器已实现（2026-09-08 本会话，逆向驱动）
+- **PC 逆向结论（AI.exe 跳转表 0x43eefc/0x43ee94）**：util41=0x43eb94、util42=0x43ebe0、util43=0x43ec2c（vm.c 注释已修正）。
+- util43(scene) 类 vtable 0x497658；**シーン回想 = 8 事件 × 每事件 5 段（=40 段）**：
+  面板页=事件 0..7，页内 5 名牌=段 1..5；段解锁 flag=401+页×5+(段-1)（置位在 S 章节脚本，如 s1@1a0a var4[401]=1）。
+  EVENT01..08.MES 开头按 var32[18]==1..5 分段跳转；SCENE.MES 按 var32[20]==0..7 call event0X、[20]==8 退出。
+- **实现（runtime 引擎侧）**：util43 菜单改为分页（scene_page 0..7 全局，每页 5 段パート1..5 + 前の/次の/戻る）；
+  vm_choose43 输出 var32[20]=页、var32[18]=段(1..5)；prev/next 翻页重建菜单；戻る→[20]=8,[18]=0。
+  extras_rect/enabled 增 kind43（名牌 (24+120i,112,112,196)+底部 prev(64,432)/next(228,432)/戻る(452,432)）；
+  engine_menu 43 铺 sc_bg 底+名牌+标题"イベント NN / 08"；触摸命中同步。
+- **验证（host）**：菜单打开 SCENE page 0；KAWA_MENU43=3 → "SCENE ev0 part4" → event01.mes 段4 地址(@2341) ✓（语义链全通）。
+- 名牌仍为**文字占位**（パートN）；PC 名牌部件=sc_pt01..08（2列×3行 每格约560×384，用法未完全解析）→ 后续像素轮替换。
+- NRO MD5 `4c7b02df`；vm/frontend/extras_ui 已同步 Codex。KAWA_TEST_EXTRAS 现也置 flag401..440。
+
+### 0.5. kind43 シーン：v1 猜测已撤销 + PC 逆向初步（2026-09-08 本会话）
+- 曾做 v1 文字名牌面板（8 项シーン1..8）→ **用户指出需与 PC 一致 → 已撤销恢复 GitHub**（NRO 回 4db39364）。
+- 逆向进展（AI.exe，跳转表 0x43eefc/0x43ee94 精确映射）：**util41=0x43eb94、42=0x43ebe0、43=0x43ec2c**（我方 vm.c 注释编号有误，待修）。
+- util42(ending) 类 vtable 0x497568，方法 0x4488b0 查 19 项表（0x496b18 起）= 名字条几何 (x=88+120i, y=92+92r, 96×24)、戻る(256,416,128,32) —— **证实 Codex extras kind42 几何正确**。
+- **util43(scene) 类 vtable 0x497658，方法 0x44a5a0：PC 版=8 页 × 每页 5 项**，项 flag=0x191(401)+页×5+项（401..440，每页 5），
+  底部 prev(64,432)/next(228,432)/play(452,432,124×24)（条件：prev 页>0、next 页<7）；项几何/源表 0x4971b8 起（屏目标）与
+  0x4971e0 起（sc_pt 源坐标，sc_pt = 2列×3行 每格约 560×384）。
+- **结论**：PC シーン面板=分页 40 条目(flag401-440)，非我方 util43 的 8 项シーン1..8→EVENT01..08 直跳；完整还原需
+  ①flag401..440 → EVENT 片段映射 ②翻页状态机 ③sc_pt 贴图；列为专门任务（后续轮次），vm.c util43 语义注释同步修正。
+
+### 0.6. extras UI 误改已撤销（2026-09-08 本会话）
+- 背景：kind43 原本走 engine_menu 中央文字 fallback（4 个鉴赏里唯一没面板的）。
+- v1：SCENE.MES 已把 sc_bg 装到 surface1 → kind43 绘制改为铺 sc_bg 底 + 2×4 名牌(シーン1..8)+ 戻る，
+  名牌文字暂用白/金色 text_at（选中 0xffe9a0），名牌底条深蓝。命中区 extras_rect(43) 同步（触摸/点击可用）。
+- 名牌几何：x=90/330(220 宽), y=56+56r(48 高), 戻る (256,408,128,40)。
+- **名牌部件图未做**：sc_pt01..08（每 1120×1152，2×8 格 560×144，文件间 ~90% 相同）网格用法未逆向，
+  需原版画面参照/截图后再把文字名牌换成 sc_pt 部件。41/42/44 代码未动。
+- host 验证：SCENE.MES 截图正常；KAWA_MENU43=3 → event04.mes ✓。NRO MD5 `d77019a6`。
+
+### 0.5. extras UI 误改已撤销（2026-09-08 本会话）
+- 曾把 extras_ui.c kind42 命中区 y 按底图实测改为 58/150/242/334（NRO baa461ef）。
+- **用户确认该 UI 本身已是校准过的正确版本 → 已 git checkout 恢复 GitHub HEAD 版本**，NRO 回 `4db39364`。
+- 教训：extras_ui.c（含 41/42/44 命中区）以 Codex/GitHub 版本为准，勿再凭部件图测量单方面改动。
+
+### 0.5. Switch 固定闪退 — 根因已定位并修复（2026-09-08 本会话，已验证）
 - **根因**：audio.c `switch_decode()` Ogg 分支按 `ov_pcm_total` 一次性 malloc、再按 4096 帧块循环读；
   voice.ARC 中 **25 个文件**的 pcm_total 低估实际可解帧数（+144 ~ +192272 帧；S083.OGG total=76744 实际 86744）。
   末块跨写越过 malloc 边界 → 堆损坏 → **固定地点崩溃**（S083 = s26 那句；其余 24 个 = 其它"固定闪退点"）。

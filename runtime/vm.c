@@ -68,6 +68,7 @@ static struct script *get_script(const char *name) {
  index_list(s,s->ast);nscripts++;note("LOAD %s",name);return s;
 }
 static void jump(const char *name,uint32_t addr) { struct script *s=get_script(name);if(!s)return;snprintf(st.ip.script,32,"%s",s->name);st.ip.addr=addr; }
+void vm_jump_at(const char *name,uint32_t addr){jump(name,addr);}
 static void push(struct loc to) { if(st.depth==NFRAME){fail("Call stack overflow");return;}st.frames[st.depth++]=st.ip;st.ip=to; }
 static void ret(void) { if(st.depth)st.ip=st.frames[--st.depth];else st.waiting=98; }
 /* Pre-register DEFINE.MES procedures so any script can be started standalone
@@ -171,6 +172,12 @@ static void assign_values(unsigned op,unsigned index,mes_expression_list vals) {
   index++;
  }
 }
+unsigned scene_page=0; /* util43 scene replay: current event page 0..7 (AI.exe util43) */
+/* set when an ending replay is launched from the エンディング (util42) menu: only
+ * those OVER plays are views; endings reached by the real story are live gameplay
+ * and may open the save/load menu. Cleared once execution leaves OVER/CREDITS. */
+static bool ending_replay_flag;
+static void scene_menu_open(void);
 static void util(mes_parameter_list p) {
  unsigned n=par(p,0),a=par(p,1);
  if(getenv("KAWA_UTILTRACE")){
@@ -231,17 +238,13 @@ static void util(mes_parameter_list p) {
   const char *items[16];music_playing=-1;
   for(unsigned k=0;k<16;k++){items[k]=k<14?music_files[k]:k==14?"停止":"タイトルに戻る";menu_nums[k]=k;}
   choice_kind=41;set_choices(items,16,2);st.waiting=2;break; }
- case 42: { // ending replay select (0x43eb94): unlocked endings -> var32[18]=1..19, 戻る=0
+ case 42: { // ending replay select (AI.exe util42=0x43ebe0): var32[18]=1..19, 戻る=0
   static char lbl[20][24];unsigned c=0;const char *items[20];
   for(unsigned k=1;k<=19;k++){snprintf(lbl[c],24,"エンディング%d",k);
    items[c]=lbl[c];menu_nums[c]=k;c++;}
   items[c]="戻る";menu_nums[c]=0;c++;
   menu_nums[c]=0;choice_kind=42;set_choices(items,c,2);st.waiting=2;break; }
- case 43: { // scene replay select (0x43ebe0): var32[20]=0..7 -> event01..08, 戻る=20:8,18:0
-  static char lbl[9][24];unsigned c=0;const char *items[9];
-  for(unsigned k=0;k<8;k++){snprintf(lbl[c],24,"シーン%d",k+1);items[c]=lbl[c];menu_nums[c]=k;c++;}
-  items[c]="戻る";menu_nums[c]=8;c++;
-  menu_nums[c]=0;choice_kind=43;set_choices(items,c,2);st.waiting=2;break; }
+ case 43:scene_menu_open();break;
  case 44:vm_album_menu();break;
  case 45:st.var[18]=1+(rand()&1);break;
  case 46:st.waiting=1;break; // page-hold until advance (CG album etc.)
@@ -295,6 +298,17 @@ static void menu_exec(struct mes_statement *q) {
  note("MENU %s:%x n=%u",st.ip.script,q->address,nchoices);
  choice_kind=2;set_choices(labels,nchoices,2);st.waiting=2;
 }
+/* Engine scene-replay menu: one event page shows its 5 parts (EVENTxx.MES jumps
+ * on var32[18]=1..5); prev/next switch event pages 0..7 (flag 401+page*5+part). */
+static void scene_menu_open(void){
+ static char lbl[8][24];unsigned c=0;const char *items[8];
+ for(unsigned k=1;k<=5;k++){snprintf(lbl[c],24,"パート%u",k);items[c]=lbl[c];menu_nums[c]=k;c++;}
+ items[c]="前のイベント";menu_nums[c]=EXTRA_PREV;c++;
+ items[c]="次のイベント";menu_nums[c]=EXTRA_NEXT;c++;
+ items[c]="戻る";menu_nums[c]=0;c++;
+ choice_kind=43;set_choices(items,c,2);st.waiting=2;
+ note("SCENE page %u",scene_page);
+}
 void vm_choose(unsigned i) {
  if(st.waiting!=2)return;
  if(choice_kind==37) { // title menu: report the item number START.MES expects
@@ -317,17 +331,26 @@ void vm_choose(unsigned i) {
  }
  if(choice_kind==42) { // ending replay: var32[18]=ending no (0 = back to title via script tail)
   if(!extras_enabled(42,menu_nums[i]))return;
-  st.var[18]=i<100?menu_nums[i]:0;st.text[0]=0;st.waiting=0;return;
+  unsigned no=i<100?menu_nums[i]:0;
+  st.var[18]=no;st.text[0]=0;st.waiting=0;
+  ending_replay_flag=(no!=0); /* replay launched from the エンディング menu */
+  return;
  }
- if(choice_kind==43) { // scene replay: var32[20]=0..7 event; 8+var18=0 = back
-  unsigned s=i<100?menu_nums[i]:8;
-  st.var[20]=s;st.var[18]=(s==8)?0:1;st.text[0]=0;st.waiting=0;return;
+ if(choice_kind==43) { // scene replay (PC util43): page=event 0..7 x 5 parts
+  unsigned s=i<100?menu_nums[i]:0;
+  if(s==EXTRA_PREV){if(scene_page>0){scene_page--;scene_menu_open();}return;}
+  if(s==EXTRA_NEXT){if(scene_page<7){scene_page++;scene_menu_open();}return;}
+  if(!s){st.var[20]=8;st.var[18]=0;st.text[0]=0;st.waiting=0;return;} /* 戻る: SCENE.MES exits */
+  if(!(st.flag[401+scene_page*5+(s-1)]==1))return; /* part locked */
+  st.var[20]=scene_page;st.var[18]=s;st.text[0]=0;st.waiting=0;
+  note("SCENE ev%u part%u",scene_page,s);return;
  }
  if(choice_kind==44) { // CG album page select
   unsigned p=i<100?menu_nums[i]:0;
   if(!extras_enabled(44,p))return;
   if(p==EXTRA_PREV||p==EXTRA_NEXT){st.var[20]+=p==EXTRA_NEXT?1:-1;vm_album_menu();return;}
-  st.var[9]=p==EXTRA_PLAY?0:1;
+  st.var[9]=1; /* any pick (incl. 連続再生) views one CG, then ALLPIC.MES returns to the menu;
+                * A/Y/B never chain into the next unlocked group (user req 2026-09-08) */
   if(p==EXTRA_PLAY){for(p=1;p<=123&&!extras_enabled(44,p);p++){}if(p>123)return;}
   note("CH44 i=%u p=%u",i,p);
   if(p==0){ // タイトルへ: script chain has no exit path; jump to title engine-side
@@ -361,10 +384,26 @@ void vm_album_menu(void){
  choice_kind=44;set_choices(items,c,2);st.waiting=2;frontend_refresh();
 }
 unsigned vm_menu_value(unsigned i) { return i<100?menu_nums[i]:0; }
+/* true while the current scene is a replay/view instead of live gameplay:
+ * CG album photos, scene replays, ending/credits playback. Save/load menus
+ * must not be summoned there (user req 2026-09-08). */
+static bool is_over_script(const char *s){return s&&!strncasecmp(s,"OVER",4);}
+static bool in_replay_view(void){
+ const char *s=st.ip.script;
+ if(!s||!s[0])return false;
+ if(!strncasecmp(s,"ALLPIC",6))return true;
+ if(!strncasecmp(s,"EVENT",5)&&s[5]>='0'&&s[5]<='9')return true;
+ if(is_over_script(s))return ending_replay_flag; /* only エンディング-replay OVERs */
+ if(!strncasecmp(s,"CREDITS",7))return true;
+ return false;
+}
 void vm_slot_menu(bool save) {
  /* Keep the dialogue and its continuation intact; other engine/script menus
   * have their own return contracts and must not be overwritten here. */
  if(st.waiting!=1)return;
+ /* only during actual gameplay dialogue; never inside replay views
+  * (CG/scene/ending/credits) — not even when they sit at a dialogue pause */
+ if(in_replay_view())return;
  /* engine save/load slot list (0..39), mirrors original 40-slot SaveData menu */
  static char lbls[41][24]; unsigned c=0; const char *items[41];
  for (unsigned s=0;s<40;s++) {
@@ -380,6 +419,9 @@ void vm_advance(void) {if(st.waiting==1){st.waiting=0;st.text[0]=0;} }
 void vm_step(void) {
  if(st.waiting)return;
  struct script *s=get_script(st.ip.script);if(!s)return;
+ if(ending_replay_flag&&!is_over_script(s->name)&&strncasecmp(s->name,"CREDITS",7))
+  ending_replay_flag=false; /* replay ended: back to live flow */
+
  if(st.ip.addr>=s->size||!s->map[st.ip.addr]){fail("No statement at %x",st.ip.addr);return;}
  struct mes_statement *q=s->map[st.ip.addr];unsigned op=q->aiw_op;
  if(++steps>50000000){fail("Instruction budget exceeded");return;}
@@ -407,7 +449,7 @@ void vm_step(void) {
  case 22:st.color=par(p,0);st.sys[7]=par(p,1);break;
  case 0x20:st.waiting=3;st.sys[255]=SDL_GetTicks()+par(p,0)*16;break;
  case 0x21:st.text[0]=0;break;
- case 0x22:frontend_hist_note();st.waiting=1;st.messages++;note("MESSAGE %u %s:%x",st.messages,s->name,q->address);break;
+ case 0x22:st.waiting=1;st.messages++;note("MESSAGE %u %s:%x",st.messages,s->name,q->address);break;
  case 0x23:draw_image(str(p,0),st.sys[12],vector_length(p)>1?(int)par(p,1):-1,vector_length(p)>2?(int)par(p,2):-1);break;
  case 0x24:case 0x25:case 0x26:copy_rect(par(p,0),par(p,1),par(p,2),par(p,3),par(p,4),par(p,5),par(p,6),par(p,7),op==0x25);break;
  case 0x27:fill_rect(par(p,0),par(p,1),par(p,2),par(p,3),st.sys[12],st.sys[7]);break;

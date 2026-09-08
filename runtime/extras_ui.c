@@ -17,6 +17,14 @@ unsigned album_flag(unsigned id){
 bool extras_enabled(unsigned kind,unsigned value){
  if(kind==41)return value==15||(value==14?music_playing>=0:(value<14&&st.flag[1510+value]==1));
  if(kind==42)return !value||(value<=19&&st.flag[129+value]==1);
+ if(kind==43){
+  extern unsigned scene_page;
+  if(!value)return true; /* 戻る */
+  if(value==EXTRA_PREV)return scene_page>0;
+  if(value==EXTRA_NEXT)return scene_page<7;
+  if(value>=1&&value<=5)return st.flag[401+scene_page*5+(value-1)]==1;
+  return false;
+ }
  if(kind==44){
   if(value==EXTRA_PREV)return st.var[20]>0;
   if(value==EXTRA_NEXT)return st.var[20]<7;
@@ -34,6 +42,14 @@ bool extras_rect(unsigned kind,unsigned v,SDL_Rect *r){
   unsigned i=v-1;
   *r=!v?(SDL_Rect){256,416,128,32}:i<4?(SDL_Rect){80+120*i,24,112,92}:
        (SDL_Rect){24+120*((i-4)%5),116+92*((i-4)/5),112,92};return true;
+ }
+ if(kind==43){
+  if(v>=1&&v<=5){*r=(SDL_Rect){24+120*(v-1),112,112,196};return true;}
+  if(v==EXTRA_PREV)*r=(SDL_Rect){64,432,80,24};
+  else if(v==EXTRA_NEXT)*r=(SDL_Rect){228,432,80,24};
+  else if(!v)*r=(SDL_Rect){452,432,124,24}; /* 戻る */
+  else return false;
+  return true;
  }
  if(kind==44){
   if(v>=1&&v<=123){unsigned i=(v-1)%16;*r=(SDL_Rect){66+132*(i%4),24+100*(i/4),112,84};return true;}
