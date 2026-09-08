@@ -1,5 +1,6 @@
 /* GPL-2.0-or-later. KAWAXP AST interpreter; original program addresses in RE.md. */
 #include "kawa.h"
+#include "zh.h"
 #include "extras_ui.h"
 #include "scene_ui.h"
 #include "save_ui.h"
@@ -267,7 +268,7 @@ static void util(mes_parameter_list p) {
   //   1=はじめから 2=ロード 3=アルバム(allpic) 4=シーン(scene)
   //   5=サウンド(sound) 6=エンディング(ending)
   // Original order and unlock tests: AI.exe 44b3a0. Sound is always available.
-  static const char *titles[6]={"はじめから","ロード","サウンド","アルバム","シーン","エンディング"};
+  static const char *titles[6]={"开始游戏","读档","声音","相册","场景","结局"};
   static const unsigned tno[6]={1,2,5,3,4,6};
   bool enabled[6]={true,st.flag[1001]!=0,true,false,false,st.flag[152]!=0};
   for(unsigned k=200;k<320;k++)if(st.flag[k]==1)enabled[3]=true;
@@ -287,14 +288,14 @@ static void util(mes_parameter_list p) {
  case 40:st.var[9]=0;st.waiting=1;break; // hold splash until advance (OVER3/16/18/SAMPLE)
  case 41: {
   const char *items[16];music_playing=-1;
-  for(unsigned k=0;k<16;k++){items[k]=k<14?music_files[k]:k==14?"停止":"タイトルに戻る";menu_nums[k]=k;}
+  for(unsigned k=0;k<16;k++){items[k]=k<14?music_files[k]:k==14?"停止":"返回标题";menu_nums[k]=k;}
   choice_kind=41;set_choices(items,16,2);st.waiting=2;break; }
  case 42: { // ending replay select (AI.exe util42=0x43ebe0): var32[18]=1..19, 戻る=0
   if(getenv("KAWA_FLAGDUMP")){unsigned n=0;for(unsigned k=1;k<=19;k++)if(extras_enabled(42,k))n++;note("EXTRAS42 unlocked=%u/19",n);}
   static char lbl[20][24];unsigned c=0;const char *items[20];
-  for(unsigned k=1;k<=19;k++){snprintf(lbl[c],24,"エンディング%d",k);
+  for(unsigned k=1;k<=19;k++){snprintf(lbl[c],24,"结局%d",k);
    items[c]=lbl[c];menu_nums[c]=k;c++;}
-  items[c]="戻る";menu_nums[c]=0;c++;
+  items[c]="返回";menu_nums[c]=0;c++;
   menu_nums[c]=0;choice_kind=42;set_choices(items,c,2);st.waiting=2;break; }
  case 43:if(getenv("KAWA_FLAGDUMP")){unsigned n=0;for(unsigned p=0;p<8;p++)for(unsigned v=1;v<=5;v++)if(st.flag[401+p*5+(v-1)]==1)n++;note("EXTRAS43 unlocked=%u/40",n);}scene_menu_open();break;
  case 44:if(getenv("KAWA_FLAGDUMP")){unsigned n=0;for(unsigned v=1;v<=123;v++)if(extras_enabled(44,v))n++;note("EXTRAS44 unlocked=%u/123",n);}vm_album_menu();break;
@@ -330,7 +331,7 @@ static void audio_op(mes_parameter_list p) {
  default:break; // original dispatch has no-op holes
  }
 }
-static const char *case_text(mes_statement_list list) {struct mes_statement *q;vector_foreach(q,list)if(q->aiw_op==0)return q->TXT.text;return "選択";}
+static const char *case_text(mes_statement_list list) {struct mes_statement *q;vector_foreach(q,list)if(q->aiw_op==0)return zh_tr(q->TXT.text);return "选择";}
 static void menu_exec(struct mes_statement *q) {
  if(!vector_length(q->AIW_MENU_EXEC.exprs)){fail("Empty menu execution");return;}
  unsigned id=ev(vector_A(q->AIW_MENU_EXEC.exprs,0));
@@ -355,10 +356,10 @@ static void menu_exec(struct mes_statement *q) {
 static void scene_menu_open(void){
  scene_ui_close(); /* replay may change unlock flags even when the page is unchanged */
  static char lbl[8][24];unsigned c=0;const char *items[8];
- for(unsigned k=1;k<=5;k++){snprintf(lbl[c],24,"パート%u",k);items[c]=lbl[c];menu_nums[c]=k;c++;}
- items[c]="前のイベント";menu_nums[c]=EXTRA_PREV;c++;
- items[c]="次のイベント";menu_nums[c]=EXTRA_NEXT;c++;
- items[c]="戻る";menu_nums[c]=0;c++;
+ for(unsigned k=1;k<=5;k++){snprintf(lbl[c],24,"第%d部分",k);items[c]=lbl[c];menu_nums[c]=k;c++;}
+ items[c]="上一事件";menu_nums[c]=EXTRA_PREV;c++;
+ items[c]="下一事件";menu_nums[c]=EXTRA_NEXT;c++;
+ items[c]="返回";menu_nums[c]=0;c++;
  choice_kind=43;set_choices(items,c,2);st.waiting=2;
  frontend_refresh(); /* page changes otherwise keep the same wait/selection and never redraw */
  note("SCENE page %u",scene_page);
@@ -451,7 +452,7 @@ void vm_album_menu(void){
  unsigned first=st.var[20]*16+1,last=first+16;if(last>124)last=124;
  for(unsigned v=first;v<last;v++){snprintf(labels[c],24,"CG %u",v);items[c]=labels[c];menu_nums[c++]=v;}
  const unsigned controls[4]={EXTRA_PREV,EXTRA_NEXT,EXTRA_PLAY,0};
- const char *names[4]={"前頁","次頁","連続再生","タイトルに戻る"};
+ const char *names[4]={"上一页","下一页","连续播放","返回标题"};
  for(unsigned k=0;k<4;k++){items[c]=names[k];menu_nums[c++]=controls[k];}
  choice_kind=44;set_choices(items,c,2);st.waiting=2;frontend_refresh();
 }
@@ -480,12 +481,12 @@ void vm_slot_menu(bool save) {
 static void storage_menu(unsigned kind){
  static char labels[15][24];const char *items[15];unsigned c=0;
  if(slot_pending>=0){
-  if(kind==45){items[c]="メモ編集";menu_nums[c++]=SLOT_MEMO;}
-  items[c]="決定";menu_nums[c++]=SLOT_YES;items[c]="キャンセル";menu_nums[c++]=SLOT_NO;
+  if(kind==45){items[c]="编辑备注";menu_nums[c++]=SLOT_MEMO;}
+  items[c]="确定";menu_nums[c++]=SLOT_YES;items[c]="取消";menu_nums[c++]=SLOT_NO;
  }else{
-  for(unsigned i=0;i<10;i++){unsigned s=slot_page*10+i;snprintf(labels[c],24,"スロット%02u",s+1);items[c]=labels[c];menu_nums[c++]=s;}
-  for(unsigned p=0;p<4;p++){snprintf(labels[c],24,"%u頁",p+1);items[c]=labels[c];menu_nums[c++]=SLOT_PAGE+p;}
-  items[c]="閉じる";menu_nums[c++]=~0u;
+  for(unsigned i=0;i<10;i++){unsigned s=slot_page*10+i;snprintf(labels[c],24,"档位%02u",s+1);items[c]=labels[c];menu_nums[c++]=s;}
+  for(unsigned p=0;p<4;p++){snprintf(labels[c],24,"第%u页",p+1);items[c]=labels[c];menu_nums[c++]=SLOT_PAGE+p;}
+  items[c]="关闭";menu_nums[c++]=~0u;
  }
  choice_kind=kind;set_choices(items,c,2);st.waiting=2;frontend_refresh();
 }
@@ -503,7 +504,7 @@ void vm_step(void) {
  st.ip.addr=q->next_address;
  mes_parameter_list p=q->CALL.params;
  switch(op) {
- case 0:frontend_text(q->TXT.text);break;
+ case 0:frontend_text(zh_tr(q->TXT.text));break;
  case 1:st.ip.addr=q->JMP.addr;break;
  case 2:util(p);break;
  case 3:jump(str(p,0),0);break;

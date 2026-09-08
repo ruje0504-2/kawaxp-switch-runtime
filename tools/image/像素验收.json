@@ -1,0 +1,382 @@
+{
+  "title_pt": {
+    "size": [
+      584,
+      888
+    ],
+    "operations": 20,
+    "changed_pixels": 306845,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "menu": {
+    "size": [
+      840,
+      372
+    ],
+    "operations": 45,
+    "changed_pixels": 124582,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "cg_pt": {
+    "size": [
+      480,
+      204
+    ],
+    "operations": 16,
+    "changed_pixels": 20509,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "cg_bg1": {
+    "size": [
+      640,
+      480
+    ],
+    "operations": 20,
+    "changed_pixels": 42723,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "cg_bg2": {
+    "size": [
+      640,
+      480
+    ],
+    "operations": 15,
+    "changed_pixels": 30886,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "sc_pt01": {
+    "size": [
+      1120,
+      1152
+    ],
+    "operations": 12,
+    "changed_pixels": 11128,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "sc_pt02": {
+    "size": [
+      1120,
+      1152
+    ],
+    "operations": 12,
+    "changed_pixels": 11128,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "sc_pt03": {
+    "size": [
+      1120,
+      1152
+    ],
+    "operations": 12,
+    "changed_pixels": 11128,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "sc_pt04": {
+    "size": [
+      1120,
+      1152
+    ],
+    "operations": 12,
+    "changed_pixels": 11128,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "sc_pt05": {
+    "size": [
+      1120,
+      1152
+    ],
+    "operations": 12,
+    "changed_pixels": 11128,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "sc_pt06": {
+    "size": [
+      1120,
+      1152
+    ],
+    "operations": 12,
+    "changed_pixels": 11128,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "sc_pt07": {
+    "size": [
+      1120,
+      1152
+    ],
+    "operations": 12,
+    "changed_pixels": 11128,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "sc_pt08": {
+    "size": [
+      1120,
+      1152
+    ],
+    "operations": 12,
+    "changed_pixels": 11128,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "sc_bg": {
+    "size": [
+      640,
+      480
+    ],
+    "operations": 3,
+    "changed_pixels": 2218,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "sl_save": {
+    "size": [
+      624,
+      464
+    ],
+    "operations": 6,
+    "changed_pixels": 7168,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "sl_load": {
+    "size": [
+      624,
+      464
+    ],
+    "operations": 6,
+    "changed_pixels": 7143,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "sl_pt": {
+    "size": [
+      656,
+      464
+    ],
+    "operations": 50,
+    "changed_pixels": 78523,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "endk": {
+    "size": [
+      272,
+      180
+    ],
+    "operations": 9,
+    "changed_pixels": 14579,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "bktitlen": {
+    "size": [
+      272,
+      180
+    ],
+    "operations": 9,
+    "changed_pixels": 14540,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "soundk_bg": {
+    "size": [
+      640,
+      480
+    ],
+    "operations": 16,
+    "changed_pixels": 45182,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "soundk_pt": {
+    "size": [
+      512,
+      1176
+    ],
+    "operations": 64,
+    "changed_pixels": 187940,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "edk_bg": {
+    "size": [
+      640,
+      480
+    ],
+    "operations": 1,
+    "changed_pixels": 1313,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "edk_pt": {
+    "size": [
+      480,
+      756
+    ],
+    "operations": 3,
+    "changed_pixels": 5151,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "setting": {
+    "size": [
+      592,
+      1096
+    ],
+    "operations": 82,
+    "changed_pixels": 95111,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "r_menu": {
+    "size": [
+      440,
+      540
+    ],
+    "operations": 11,
+    "changed_pixels": 31984,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "sl_parts": {
+    "size": [
+      628,
+      264
+    ],
+    "operations": 34,
+    "changed_pixels": 31575,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "end_staff00": {
+    "size": [
+      752,
+      1152
+    ],
+    "operations": 15,
+    "changed_pixels": 116513,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "end_staff01": {
+    "size": [
+      752,
+      1152
+    ],
+    "operations": 15,
+    "changed_pixels": 136620,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "end_staff02": {
+    "size": [
+      752,
+      1152
+    ],
+    "operations": 15,
+    "changed_pixels": 173933,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "end_staff03": {
+    "size": [
+      752,
+      1152
+    ],
+    "operations": 15,
+    "changed_pixels": 156555,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "end_staff04": {
+    "size": [
+      752,
+      1152
+    ],
+    "operations": 15,
+    "changed_pixels": 178774,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "end_staff05": {
+    "size": [
+      752,
+      1152
+    ],
+    "operations": 15,
+    "changed_pixels": 157003,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "end_staff06": {
+    "size": [
+      752,
+      1152
+    ],
+    "operations": 15,
+    "changed_pixels": 192866,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "end_staff07": {
+    "size": [
+      752,
+      1152
+    ],
+    "operations": 15,
+    "changed_pixels": 198974,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "end_staff08": {
+    "size": [
+      752,
+      1152
+    ],
+    "operations": 15,
+    "changed_pixels": 179525,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "end_staff09": {
+    "size": [
+      752,
+      1152
+    ],
+    "operations": 15,
+    "changed_pixels": 139600,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "end_staff10": {
+    "size": [
+      752,
+      1152
+    ],
+    "operations": 15,
+    "changed_pixels": 196847,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  },
+  "end_staff11": {
+    "size": [
+      752,
+      1152
+    ],
+    "operations": 15,
+    "changed_pixels": 177868,
+    "outside_rect_changes": 0,
+    "status": "rendered"
+  }
+}

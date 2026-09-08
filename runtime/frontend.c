@@ -8,6 +8,7 @@
 #include "extras_ui.h"
 #include "scene_ui.h"
 #include "save_ui.h"
+#include "zh.h"
 #include <unistd.h>
 #include <sys/stat.h>
 #include <zlib.h>
@@ -287,13 +288,45 @@ void copy_rect(int sx,int sy,int ex,int ey,unsigned src,int dx,int dy,unsigned d
  else {SDL_SetSurfaceBlendMode(s,SDL_BLENDMODE_NONE);SDL_BlitSurface(s,&from,surfaces[dst],&to);}
  if(temp)SDL_FreeSurface(temp);
 }
+/* 汉化图覆盖：{data_dir}/img-trans/<basename>.png 若存在并能解码则返回之，否则 NULL。
+ * 只在 draw_image(剧情/标题/菜单等经脚本贴图的图)里用；错误一律静默回退 ARC。 */
+static struct cg *png_override_load(const char *resource)
+{
+ /* build <base> without final extension */
+ char base[256];
+ size_t bl=strlen(resource);
+ if (bl>=sizeof(base)) bl=sizeof(base)-1;
+ memcpy(base,resource,bl); base[bl]=0;
+ char *dot=strrchr(base,'.');
+ if (dot) *dot=0;
+ if (!data_dir[0]) return NULL;
+ char path[1400];
+ snprintf(path,sizeof(path),"%s/img-trans/%s.png",data_dir,base);
+ FILE *f=fopen(path,"rb");
+ if (!f) return NULL;
+ if (fseek(f,0,SEEK_END)!=0){fclose(f);return NULL;}
+ long sz=ftell(f);
+ if (sz<=0){fclose(f);return NULL;}
+ if (fseek(f,0,SEEK_SET)!=0){fclose(f);return NULL;}
+ uint8_t *buf=malloc((size_t)sz+1);
+ if (!buf){fclose(f);return NULL;}
+ if (fread(buf,1,(size_t)sz,f)!=(size_t)sz){free(buf);fclose(f);return NULL;}
+ fclose(f);
+ struct cg *c=png_decode(buf,(size_t)sz);
+ free(buf);
+ if (c) { if (c->ref==0) c->ref=1; note("draw_image: override %s (%ldB)",path,sz); }
+ return c;
+}
 void draw_image(const char *name,unsigned dst,int x,int y) {
  gfx_dirty=true;
  char real[256];snprintf(real,sizeof(real),"%s",name);char *ext=strrchr(real,'.');
  if(ext&&!strcasecmp(ext,".bmp"))snprintf(ext,sizeof(real)-(ext-real),".gcc");
- struct archive_data *d=archive_get(cg_arc,real);
- if(!d){fail("Missing image %s",real);return;}
- struct cg *c=cg_load_arcdata(d);archive_data_release(d);if(!c){fail("Decode %s",real);return;}
+ struct cg *c=png_override_load(real);
+ struct archive_data *d;
+ if(!c){d=archive_get(cg_arc,real);
+  if(!d){fail("Missing image %s",real);return;}
+  c=cg_load_arcdata(d);archive_data_release(d);if(!c){fail("Decode %s",real);return;}
+ }
  if(x<0)x=c->metrics.x;if(y<0)y=c->metrics.y;
  if(ensure_surface(dst,x+c->metrics.w,y+c->metrics.h)) {
   SDL_Surface *s=SDL_CreateRGBSurfaceWithFormatFrom(c->pixels,c->metrics.w,c->metrics.h,32,c->metrics.w*4,SDL_PIXELFORMAT_RGBA32);
@@ -910,6 +943,7 @@ int main(int argc,char **argv) {
    fprintf(stderr,"Cannot create save directory %s\n",save_dir);return 1;}}
 #endif
  char fontbuf[1200];if(!fontpath){snprintf(fontbuf,sizeof(fontbuf),"%s/Kosugi-Regular.ttf",data_dir);fontpath=fontbuf;}
+ zh_init(data_dir); /* load zh_CN.txt translation table, if present */
 if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER)||kawa_text_init()){fprintf(stderr,"SDL: %s\n",SDL_GetError());return 1;}
 #ifdef __SWITCH__
  /* Switch SDL2 runs fullscreen at the console resolution (handheld 1280x720 /

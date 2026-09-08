@@ -60,7 +60,7 @@ void save_ui_scan(void){
      saved.waiting==1&&memchr(saved.text,0,sizeof(saved.text));
   }
   free(head);
-  if(!valid[i]){snprintf(descriptions[i],512,"データを読み込めません");continue;}
+  if(!valid[i]){snprintf(descriptions[i],512,"无法读取存档");continue;}
   char date[32]="",text[256];struct tm t;if(localtime_r(&sb.st_mtime,&t))strftime(date,sizeof(date),"%m/%d %H:%M",&t);
   snprintf(text,sizeof(text),"%.240s",saved.text);
   path_for(path,sizeof(path),i,"memo");FILE *m=fopen(path,"rb");if(m){size_t n=fread(text,1,sizeof(text)-1,m);text[n]=0;fclose(m);}

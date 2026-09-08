@@ -216,9 +216,15 @@ PYEOF
 
 echo "[4/5] 拷贝只读游戏数据到 RomFS（不含任何 flag/save）"
 DATA="$WS/../../switch-package/KAWAXP"
-for f in "$DATA"/*.ARC "$DATA"/*.AWF "$DATA"/*.ttf; do
+for f in "$DATA"/*.ARC "$DATA"/*.AWF "$DATA"/*.ttf "$DATA"/zh_CN.txt; do
     [ -e "$f" ] && cp "$f" "$TMP/romfs/"
 done
+# 汉化图覆盖层：若 switch-package/KAWAXP/img-trans/ 存在则整体拷入 RomFS。
+# 运行时 draw_image 优先读 {data_dir}/img-trans/<base>.png（缺则回退 ARC 原图）。
+if [ -d "$DATA/img-trans" ]; then
+    cp -R "$DATA/img-trans" "$TMP/romfs/img-trans"
+    echo "img-trans: $(ls "$DATA/img-trans" | wc -l | tr -d ' ') 张汉化图入 RomFS"
+fi
 du -sh "$TMP/romfs" | awk '{print "romfs:", $1}'
 
 echo "[5/5] hacbrewpack 打包 NSP"
