@@ -10,7 +10,7 @@ executable('kawaxp-probe', sources, dependencies: deps)
 if get_option('runtime')
   static_deps = host_machine.system() == 'horizon'
   if host_machine.system() == 'horizon'
-    runtime_src = ['runtime/vm.c','runtime/frontend.c','runtime/audio.c','runtime/text_ft.c']
+    runtime_src = ['runtime/vm.c','runtime/frontend.c','runtime/audio.c','runtime/text_ft.c','runtime/switch_hos.c']
     runtime_deps = deps + [dependency('sdl2', static: true), dependency('freetype2', static: true),
                            dependency('vorbisfile', static: true), dependency('vorbis', static: true),
                            dependency('ogg', static: true), dependency('zlib', static: true)]
@@ -27,5 +27,15 @@ if get_option('runtime')
     scene_test = executable('scene-ui-test', ['tests/scene_ui_test.c','runtime/scene_ui.c','runtime/ax.c','runtime/ax_render.c'],
                             dependencies: deps + [dependency('sdl2')], c_args: ['-D_DEFAULT_SOURCE'])
     test('Scene UI input bounds', scene_test)
+    effect_src = []
+    foreach src : runtime_src
+      if src != 'runtime/frontend.c'
+        effect_src += src
+      endif
+    endforeach
+    effect_test = executable('effects-test', ['tests/effects_test.c'] + effect_src,
+                             dependencies: runtime_deps, c_args: ['-D_DEFAULT_SOURCE'])
+    test('PC effect state machines and pixels', effect_test)
+
   endif
 endif

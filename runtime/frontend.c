@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <math.h>
 #ifdef __SWITCH__
 #include <switch.h>
 #endif
@@ -37,43 +38,25 @@ static unsigned fr_cnt;static Uint32 fr_acc,fr_max,fr_logt; /* rebuild/upload ca
 static bool frame_log; /* KAWA_FRAMELOG=1: periodic FRAME stats to the log (off by default) */
 static char last_msg[1024];static int last_wait=-1,last_sel=-1;static bool last_cho=false,last_hide=false,last_ff=false,last_status=false; /* hide message window/text: B (keyboard b) toggles */
 struct ax_player animation;
-/* Util 34 screen quake: level>0 enables a subtle tremor until quake(0). */
-static int quake_level;static Uint32 quake_start;
-static SDL_Surface *quake_tile; /* 1280x960 gray tile built once per quake start */
-static SDL_Surface *quake_build_tile(SDL_Surface *src){
- if(!src)return NULL;
- SDL_Surface*t=SDL_CreateRGBSurfaceWithFormat(0,1280,960,32,SDL_PIXELFORMAT_RGBA32);
- if(!t)return NULL;
- SDL_SetSurfaceBlendMode(t,SDL_BLENDMODE_NONE);
- /* grayscale the source into the top-left 640x480 */
- {unsigned char*sp=(unsigned char*)src->pixels; unsigned char*tp=(unsigned char*)t->pixels;
-  int sw=src->w<640?src->w:640, sh=src->h<480?src->h:480;
-  for(int y=0;y<sh;y++){unsigned char*sr=sp+y*src->pitch; unsigned char*tr=tp+y*t->pitch;
-   for(int x=0;x<sw;x++){unsigned char*px=sr+x*4; unsigned g=(unsigned char)((px[0]*3+px[1]*6+px[2])/10);
-    unsigned char*d=tr+x*4; d[0]=g;d[1]=g;d[2]=g;d[3]=255;}}}
- /* tile it 2x2 for seamless slow scroll */
- SDL_Rect d1={0,480,640,480},d2={640,0,640,480},d3={640,480,640,480};
- SDL_Rect srcr={0,0,640,480};
- SDL_BlitSurface(t,&srcr,t,&d1); SDL_BlitSurface(t,&srcr,t,&d2); SDL_BlitSurface(t,&srcr,t,&d3);
- return t;
-}
+/* AI.exe 43e590 / 437270: timer-driven row displacement, script-controlled. */
+static bool quake_level;
+static unsigned quake_phase;
+static Uint32 quake_next;
+static int quake_wave[480];
 void frontend_quake(unsigned level) {
- if(level&&!quake_tile){SDL_Surface*src=surfaces[1]?surfaces[1]:(surfaces[0]?surfaces[0]:NULL);
-  if(quake_tile)SDL_FreeSurface(quake_tile); quake_tile=quake_build_tile(src);}
- if(!level&&quake_tile){SDL_FreeSurface(quake_tile);quake_tile=NULL;}
- quake_level=(int)level; if(level) quake_start=SDL_GetTicks(); if(getenv("KAWA_QUAKE")&&!level)quake_level=1;
+ if(level==1){
+  for(unsigned i=0;i<480;i++)quake_wave[i]=(int)(100.0*cos(0.02617993833*i));
+  quake_phase=0;quake_next=SDL_GetTicks()+80;quake_level=true;
+ }else if(level!=255)quake_level=false;
+ gfx_dirty=true;
 }
-/* Util 35 transition masks (%02u.msk, 640x480 raw 8-bit): validated here; the real
- * timed wipe (old page -> staged surface 1 with per-pixel mask reveal) is pending a
- * page-model cross-check against the original, see work/msk-note.md. */
-/* Util35 transition masks (%02u.msk = 640x480 raw 8-bit per-pixel "reveal time"). */
 static uint8_t *msk_data[16];
 static const uint8_t *msk_get(unsigned idx) {
  if(idx>=16)return NULL;
  if(!msk_data[idx]) {
   char name[16];snprintf(name,sizeof(name),"%02u.msk",idx);
   struct archive_data *d=seq_arc?archive_get(seq_arc,name):NULL;
-  if(d&&d->size>=307200){msk_data[idx]=(uint8_t*)malloc(307200);memcpy(msk_data[idx],d->data,307200);}
+  if(d&&d->size>=307200){msk_data[idx]=(uint8_t*)malloc(307200);if(msk_data[idx])memcpy(msk_data[idx],d->data,307200);}
   if(d)archive_data_release(d);
   if(getenv("KAWA_MSKTRACE"))note("MSK %s %s",name,msk_data[idx]?"loaded":"missing");
  }
@@ -81,43 +64,18 @@ static const uint8_t *msk_get(unsigned idx) {
 }
 void frontend_msk_note(unsigned idx){(void)msk_get(idx);}
 
-/* util35 = masked scene transition (AI.exe 0x43a0b5): reveal the new frame staged on
- * surface 1 over the CURRENT display (surface 0) using the mask's per-pixel reveal
- * thresholds, phased over ~12 steps so the old picture is still visible while it is
- * being covered (not an instant black-out / opaque replace). In smoke it completes
- * instantly. */
-static struct { bool on; unsigned idx; SDL_Surface *from; unsigned step; unsigned steps; Uint32 next;
- unsigned char ths[16]; /* equal-pixel-quantile step thresholds */ } xf;
+/* Mask bytes are alpha, not a CG palette: 11 soft phases plus final commit. */
+static struct { bool on; unsigned idx,step; SDL_Surface *from; Uint32 next; } xf;
+void frontend_xfade_skip(void);
 bool frontend_xfade_start(unsigned idx) {
- if(smoke||!surfaces[0]||!surfaces[1]){
-  if(surfaces[0]&&surfaces[1]){SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[1],&r,surfaces[0],&r);}
-  return false;
+ frontend_xfade_skip();
+ if(!surfaces[0]||!surfaces[1])return false;
+ if(smoke||!msk_get(idx)){
+  copy_rect(0,0,639,479,1,0,0,0,false);return false;
  }
- if(!msk_get(idx)){SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[1],&r,surfaces[0],&r);return false;}
- /* If the staged frame is pure black (kuro fade templates), do NOT black out the
-  * display: keep the previous picture on screen (quake then trembles that picture).
-  * AI.exe page semantics are still unverified; Codex to confirm on device. */
- if(surfaces[1]&&surfaces[0]){
-  unsigned char*b=(unsigned char*)surfaces[1]->pixels;unsigned long k=0;
-  for(int yy=0;yy<480;yy+=4){unsigned char*r=b+yy*surfaces[1]->pitch;for(int xx=0;xx<640;xx+=4)k+=r[xx*4];}
-  if(k<2000)return false; /* staged frame is ~pure black: keep old display */
- }
- if(!xf.on){
-  xf.from=SDL_CreateRGBSurfaceWithFormat(0,640,480,32,SDL_PIXELFORMAT_RGBA32);
-  if(!xf.from){SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[1],&r,surfaces[0],&r);return false;}
-  SDL_SetSurfaceBlendMode(xf.from,SDL_BLENDMODE_NONE);
-  {SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[0],&r,xf.from,&r);}
-  /* step thresholds at equal pixel counts (mask values are NOT uniform; naive
-   * linear thresholds stall then jump, leaving a stuck right-hand blob) */
-  {const uint8_t *mm=msk_data[idx<16?idx:0];
-   unsigned hist[256]={0};for(int i=0;i<307200;i++)hist[mm[i]]++;
-   unsigned acc=0,k=1;
-   for(int v=0;v<256&&k<=12;v++){acc+=hist[v];while(k<=12&&acc>=(unsigned)(307200u*k)/12u)xf.ths[k++]=(unsigned char)v;}
-   while(k<=12)xf.ths[k++]=255;
-   xf.ths[0]=0;}
-  xf.on=true;xf.idx=idx;xf.step=0;xf.steps=12;xf.next=SDL_GetTicks()+20;
- }
- return true;
+ xf.from=SDL_ConvertSurface(surfaces[0],surfaces[0]->format,0);
+ if(!xf.from){copy_rect(0,0,639,479,1,0,0,0,false);return false;}
+ xf.on=true;xf.idx=idx;xf.step=0;xf.next=SDL_GetTicks();return true;
 }
 bool frontend_xfade_active(void){return xf.on;}
 /* util4 = page fade-in from black (AI.exe 0x43e788): draw the staged page at
@@ -161,80 +119,80 @@ void frontend_fadein_skip(void){
  }
 }
 bool frontend_fadein_active(void){return fd.on;}
-/* engine menu fade-in: when an engine menu opens, blend from the frame shown
- * just before it to the menu frame over ~12 steps (menus appear progressively
- * over the title/scene image). */
-static SDL_Surface *mf_base;static unsigned mf_step;static Uint32 mf_next;static bool mf_on;
-static void menu_fade_start(void){
- if(mf_on||!canvas)return;
- mf_base=SDL_ConvertSurface(canvas,canvas->format,0);
- mf_on=(mf_base!=NULL);mf_step=0;mf_next=SDL_GetTicks()+20;
-}
-static void menu_fade_apply(void){
- if(!mf_on||!mf_base)return;
- if(mf_step<12&&(Sint32)(SDL_GetTicks()-mf_next)>=0){mf_next=SDL_GetTicks()+20;mf_step++;}
- unsigned s=mf_step;if(s>12)s=12;
- unsigned char*dp=(unsigned char*)canvas->pixels,*bp=(unsigned char*)mf_base->pixels;
- int pitch=canvas->pitch,bpitch=mf_base->pitch;
- int w=canvas->w<640?canvas->w:640,h=canvas->h<480?canvas->h:480;
- for(int y=0;y<h;y++){
-  unsigned char*drow=dp+y*pitch,*brow=bp+y*bpitch;
-  for(int x=0;x<w;x++){
-   unsigned b0=brow[x*4],b1=brow[x*4+1],b2=brow[x*4+2];
-   drow[x*4]=(unsigned char)((b0*(12-s)+drow[x*4]*s)/12);
-   drow[x*4+1]=(unsigned char)((b1*(12-s)+drow[x*4+1]*s)/12);
-   drow[x*4+2]=(unsigned char)((b2*(12-s)+drow[x*4+2]*s)/12);
-  }
- }
- if(mf_step>=12){mf_on=false;SDL_FreeSurface(mf_base);mf_base=NULL;}
-}
 void frontend_xfade_poll(void) {
- if(!xf.on)return;
- if((Sint32)(SDL_GetTicks()-xf.next)<0)return;
+ if(!xf.on||(Sint32)(SDL_GetTicks()-xf.next)<0)return;
  xf.next=SDL_GetTicks()+20;
- xf.step++;
- SDL_Surface*dst=surfaces[0],*to=surfaces[1];
- const uint8_t*m=xf.idx<16?msk_data[xf.idx]:NULL;
- if(!m||!dst||!to||!xf.from){xf.on=false;if(xf.from)SDL_FreeSurface(xf.from);xf.from=NULL;return;}
- unsigned th=xf.step<=12?xf.ths[xf.step]:255;
- unsigned char*dp=(unsigned char*)dst->pixels,*fp=(unsigned char*)xf.from->pixels,*tp=(unsigned char*)to->pixels;
- int dpitch=dst->pitch,fpitch=xf.from->pitch,tpitch=to->pitch;
- for(int y=0;y<480;y++){
-  const unsigned char*mrow=m+y*640;
-  unsigned char*drow=dp+y*dpitch,*frow=fp+y*fpitch,*trow=tp+y*tpitch;
+ if(++xf.step==12){frontend_xfade_skip();return;}
+ SDL_Surface *dst=surfaces[0],*to=surfaces[1];
+ unsigned L=xf.step*32;
+ for(int y=0;y<480;y++)for(int x=0;x<640;x++){
+  unsigned m=msk_data[xf.idx][y*640+x];
+  unsigned v=m<L?L-m+16:0;if(v>255)v=255;
+  uint8_t *d=(uint8_t*)dst->pixels+y*dst->pitch+4*x;
+  uint8_t *f=(uint8_t*)xf.from->pixels+y*xf.from->pitch+4*x;
+  uint8_t *t=(uint8_t*)to->pixels+y*to->pitch+4*x;
+  for(int c=0;c<3;c++)d[c]=(f[c]*(255-v)+t[c]*v)/255;
+  d[3]=255;
+ }
+ gfx_dirty=true;
+}
+void frontend_xfade_skip(void) {
+ if(!xf.on)return;
+ copy_rect(0,0,639,479,1,0,0,0,false);
+ xf.on=false;SDL_FreeSurface(xf.from);xf.from=NULL;
+}
+/* util8: preserve display in page 7, composite new region, then interlace rows.
+ * One original iteration waits at most 1 ms; batch elapsed iterations per display.
+ * Clicking removes the wait but still executes every row and the final commit. */
+static struct {bool on; int x,y,w,h,i; Uint32 next;} ppf;
+bool frontend_ppf_active(void){return ppf.on;}
+static void ppf_finish(void){
+ copy_rect(ppf.x,ppf.y,ppf.x+ppf.w-1,ppf.y+ppf.h-1,1,ppf.x,ppf.y,0,true);
+ ppf.on=false;
+}
+bool frontend_ppf_start(int x,int y,int w,int h){
+ if(ppf.on)ppf_finish();
+ copy_rect(0,0,639,479,0,0,0,7,false);
+ /* Zero-sized original calls have no scanlines; keep the existing no-op region. */
+ if(w<=0||h<=0)return false;
+ int right=x+w,bottom=y+h;if(x<0)x=0;if(y<0)y=0;
+ if(right>640)right=640;
+ if(bottom>480)bottom=480;
+ w=right-x;h=bottom-y;if(w<=0||h<=0)return false;
+ ppf.x=x;ppf.y=y;ppf.w=w;ppf.h=h;ppf.i=0;ppf.next=SDL_GetTicks();
+ copy_rect(x,y,x+w-1,y+h-1,1,x,y,7,true);
+ ppf.on=true;return true;
+}
+static void ppf_poll(bool fast){
+ if(!ppf.on)return;
+ Uint32 now=SDL_GetTicks();
+ while(ppf.i<ppf.h/2&&(fast||smoke||(Sint32)(now-ppf.next)>=0)){
+  int rows[2]={ppf.y+2*ppf.i,ppf.y+ppf.h-1-2*ppf.i};
+  for(int j=0;j<2;j++)copy_rect(ppf.x,rows[j],ppf.x+ppf.w-1,rows[j],7,ppf.x,rows[j],0,false);
+  ppf.i++;ppf.next++;
+ }
+ if(ppf.i==ppf.h/2)ppf_finish();
+}
+static void quake_poll(void){
+ if(!quake_level)return;
+ Uint32 now=SDL_GetTicks();if((Sint32)(now-quake_next)<0)return;
+ quake_next=now+80;
+ if(xf.on||fd.on||ppf.on)return;
+ SDL_Surface *src=surfaces[1],*dst=surfaces[0];if(!src||!dst)return;
+ /* Original DIB walks from its bottom storage row towards the top: screen y=0. */
+ for(int y=0;y<479;y++){
+  int dx=quake_wave[quake_phase]/6;quake_phase=(quake_phase+1)%480;
+  uint8_t *d=(uint8_t*)dst->pixels+y*dst->pitch;
+  uint8_t *t=(uint8_t*)src->pixels+y*src->pitch;
   for(int x=0;x<640;x++){
-   if(mrow[x]<=th)memcpy(drow+x*4,trow+x*4,4); /* <= so mask value 255 reveals on the last step */
-   else memcpy(drow+x*4,frow+x*4,4);
+   int sx=x-dx;
+   if(sx<0)sx+=640;
+   /* Negative displacement reads the source extension when the page has one. */
+   if(sx>=src->w)sx%=640;
+   memcpy(d+4*x,t+4*sx,4);
   }
  }
- /* the wipe wrote into surface 0: mark the canvas dirty or the frame loop will
-  * keep showing the old texture and the transition stalls until input/state
-  * forces a repaint */
  gfx_dirty=true;
- if(xf.step>=xf.steps){xf.on=false;SDL_FreeSurface(xf.from);xf.from=NULL;}
-}
-void frontend_xfade_skip(void) { /* finish instantly on click/ff */
- if(xf.on){
-  if(surfaces[0]&&surfaces[1]){SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[1],&r,surfaces[0],&r);}
-  xf.on=false;if(xf.from)SDL_FreeSurface(xf.from);xf.from=NULL;
- }
-}
-
-/* util34 = quake: per the user's PC observation these moments show a full gray
- * textured frame (the grayscale test@ pattern scripts stage on surface 1) drifting
- * slowly -- 0% of the previous picture. Render that: sample surface 1 (fall back to
- * surface 0) as a slowly scrolling texture across the whole canvas. */
-static void quake_render(void) {
- SDL_Surface *src=surfaces[1]?surfaces[1]:(surfaces[0]?surfaces[0]:NULL);
- if(!src)return;
- if(!quake_tile)quake_tile=quake_build_tile(src);
- if(!quake_tile)return;
- Uint32 t=SDL_GetTicks()-quake_start;
- int ox=(int)(t/90)%640;   /* slow horizontal drift */
- int oy=(int)(t/260)%480;  /* slower vertical drift */
- /* single blit from the cached 2x2 gray tile (offset stays small vs 1280x960) */
- SDL_Rect fr={ox,oy,640,480};
- SDL_BlitSurface(quake_tile,&fr,canvas,NULL);
 }
 static bool ensure_surface(unsigned i,int w,int h) {
  if(i>=NSURF||w>4096||h>4096||w<0||h<0){fail("Invalid surface %u %dx%d",i,w,h);return false;}
@@ -343,9 +301,11 @@ void frontend_text(const char *text) {
  * d-pad/keyboard move (or a touch) arms a selection, A only confirms after that,
  * so a stray A press cannot skip past the first option. */
 static bool need_sel;
+static bool title_seen;
 static void menu_move(int dx,int dy){
  if(st.waiting!=2||!choice_open)return;
- if(need_sel&&vm_choice_kind()==2){
+ if(vm_choice_kind()==37&&title_ui_active()){title_ui_skip();gfx_dirty=true;return;}
+ if(need_sel&&(vm_choice_kind()==2||vm_choice_kind()==37)){
   need_sel=false;
   selected=(dy<0&&choice_count)?choice_count-1:0;
   gfx_dirty=true;return;
@@ -354,26 +314,38 @@ static void menu_move(int dx,int dy){
 }
 void set_choices(const char **items,unsigned count,int kind) {
  (void)kind;choice_count=count>100?100:count;selected=0;choice_open=true;
- need_sel=(vm_choice_kind()==2); /* story branch: wait for explicit pick */
+ need_sel=(vm_choice_kind()==2||vm_choice_kind()==37);
+ if(vm_choice_kind()==37){
+  title_ui_begin(surfaces[7],surfaces[1],msk_get(11),!title_seen);title_seen=true;
+  if(smoke)title_ui_skip();
+ }
  for(unsigned i=0;i<choice_count;i++)snprintf(labels[i],sizeof(labels[i]),"%s",items[i]);
 }
+/* 4391d0: window (0,376), text-local origin (32,24).
+ * 443710: choice strips at local y=16+18*row; four rows per column.
+ * DEFINE.MES text bounds 32..624 give 592px; original choice width subtracts 8. */
+static SDL_Rect story_choice_rect(unsigned i){
+ unsigned base=(selected/8)*8,n=choice_count-base;if(n>8)n=8;
+ unsigned j=i-base;int width=n>4?288:584;
+ return (SDL_Rect){32+(int)(j/4)*width,392+(int)(j%4)*18,width,18};
+}
 static SDL_Surface *msg_cache;
-static char msg_key[1024];
+static char msg_key[sizeof(st.text)];
 static uint32_t msg_col;
 static SDL_Surface *msg_surface(int *w,int *h){
- if(msg_cache&&!strcmp(msg_key,st.text)&&msg_col==st.color){*w=600;*h=msg_cache->h;return msg_cache;}
- SDL_Surface*s0=kawa_text_render(font,st.text,600,0x000000);
- SDL_Surface*s1=kawa_text_render(font,st.text,600,st.color);
+ if(msg_cache&&!strcmp(msg_key,st.text)&&msg_col==st.color){*w=592;*h=msg_cache->h;return msg_cache;}
+ SDL_Surface*s0=kawa_text_render(font,st.text,592,0x000000);
+ SDL_Surface*s1=kawa_text_render(font,st.text,592,st.color);
  int h1=s0?s0->h:0,h2=s1?s1->h:0;int hh=h1>h2?h1:h2;
  if(hh<=0){if(s0)SDL_FreeSurface(s0);if(s1)SDL_FreeSurface(s1);return NULL;}
- SDL_Surface*c=SDL_CreateRGBSurfaceWithFormat(0,600,hh+2,32,SDL_PIXELFORMAT_RGBA32);
+ SDL_Surface*c=SDL_CreateRGBSurfaceWithFormat(0,592,hh+2,32,SDL_PIXELFORMAT_RGBA32);
  if(!c){if(s0)SDL_FreeSurface(s0);if(s1)SDL_FreeSurface(s1);return NULL;}
  SDL_SetSurfaceBlendMode(c,SDL_BLENDMODE_BLEND);
  if(s0){SDL_Rect d={1,1,0,0};SDL_BlitSurface(s0,NULL,c,&d);SDL_FreeSurface(s0);}
  if(s1){SDL_Rect d={0,0,0,0};SDL_BlitSurface(s1,NULL,c,&d);SDL_FreeSurface(s1);}
  if(msg_cache)SDL_FreeSurface(msg_cache);
  msg_cache=c;snprintf(msg_key,sizeof(msg_key),"%s",st.text);msg_col=st.color;
- *w=600;*h=hh+2;
+ *w=592;*h=hh+2;
  return msg_cache;
 }
 static void text_at(const char *text,int x,int y,uint32_t color,int width) {
@@ -419,21 +391,17 @@ void frontend_present(void) {
    snprintf(last_msg,sizeof(last_msg),"%s",st.text);gfx_dirty=true;}
  if(last_wait!=st.waiting){last_wait=st.waiting;gfx_dirty=true;}
  if(last_sel!=selected){last_sel=selected;gfx_dirty=true;}
- if(last_cho!=choice_open){last_cho=choice_open;gfx_dirty=true;
-  if(choice_open&&st.waiting==2&&vm_choice_kind()!=2)menu_fade_start();
- }
+ if(last_cho!=choice_open){last_cho=choice_open;gfx_dirty=true;}
  if(last_hide!=hide_msg){last_hide=hide_msg;gfx_dirty=true;}
  if(last_ff!=ff_hold){last_ff=ff_hold;gfx_dirty=true;}
  {bool st_now=status_until>SDL_GetTicks(); if(st_now!=last_status){last_status=st_now;gfx_dirty=true;} if(st_now)gfx_dirty=true;}
- if(quake_level&&(SDL_GetTicks()-quake_start)<3000)gfx_dirty=true; /* moving */
- if(mf_on)gfx_dirty=true; /* menu fade needs a fresh canvas every frame */
+
  if(!gfx_dirty){ /* nothing changed: reuse last uploaded texture */
   SDL_RenderClear(renderer);SDL_RenderCopy(renderer,texture,NULL,NULL);SDL_RenderPresent(renderer);
   return;
  }
  gfx_dirty=false;
- SDL_FillRect(canvas,NULL,rgb(canvas,0)); if(quake_level&&(unsigned)(SDL_GetTicks()-quake_start)<3000)quake_render();
- else if(surfaces[0]){SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[0],&r,canvas,NULL);}
+ SDL_FillRect(canvas,NULL,rgb(canvas,0)); if(surfaces[0]){SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[0],&r,canvas,NULL);}
  bool engine_menu=(st.waiting==2&&choice_open&&vm_choice_kind()!=2);
  if(!engine_menu&&((st.text[0]&&!hide_msg)||(st.waiting==2&&choice_open&&vm_choice_kind()==2))&&(!hide_msg)) {
   /* engine message window = the BOTTOM half (rows 104..207) of the boot-loaded
@@ -460,24 +428,28 @@ void frontend_present(void) {
   if(st.waiting==2&&choice_open&&vm_choice_kind()==2){
    /* story choices render as plain text inside the message window, exactly like
     * the dialogue line (no box/frame); the selected row is tinted. */
-   unsigned start=selected>=8?selected-7:0,visible=choice_count-start;if(visible>8)visible=8;
-   int lh=visible? (104-8)/ (int)visible : 26; if(lh>26)lh=26; if(lh<14)lh=14;
-   int y0=376+(104-(int)visible*lh)/2;
+   unsigned start=(selected/8)*8,visible=choice_count-start;if(visible>8)visible=8;
+   SDL_Rect clip;SDL_GetClipRect(canvas,&clip);
    for(unsigned j=0;j<visible;j++){
-    int y=y0+(int)j*lh;
+    SDL_Rect row=story_choice_rect(start+j);
+    SDL_SetClipRect(canvas,&row);
     bool sel=(!need_sel&&(start+j==selected));
-    text_at(labels[start+j],28,y+2,sel?0xffe9a0:0xffffff,584);
+    text_at(labels[start+j],row.x,row.y,sel?0xffe9a0:0xffffff,row.w);
    }
+   SDL_SetClipRect(canvas,&clip);
   } else {
-   int tw=600,th=0;SDL_Surface*ms=msg_surface(&tw,&th);
-   if(ms){SDL_Rect to={28,392,0,0};SDL_BlitSurface(ms,NULL,canvas,&to);}
+   int tw=592,th=0;SDL_Surface*ms=msg_surface(&tw,&th);
+   if(ms){
+    SDL_Rect clip,area={32,400,592,72};SDL_GetClipRect(canvas,&clip);SDL_SetClipRect(canvas,&area);
+    SDL_Rect to={32,400,0,0};SDL_BlitSurface(ms,NULL,canvas,&to);SDL_SetClipRect(canvas,&clip);
+   }
   }
  }
  if(engine_menu) {
   if(vm_choice_kind()==37&&surfaces[7]&&surfaces[7]->h>=888) {
    unsigned results[6];unsigned count=choice_count<6?choice_count:6;
    for(unsigned i=0;i<count;i++)results[i]=vm_menu_value(i);
-   title_ui_draw(surfaces[7],canvas,results,count,selected);
+   title_ui_draw(surfaces[7],canvas,results,count,need_sel?~0u:selected);
   } else if(vm_choice_kind()==43){
    extern unsigned scene_page;
    scene_ui_draw(canvas,scene_page,vm_menu_value(selected));
@@ -502,8 +474,6 @@ void frontend_present(void) {
   text_at(error_text,14,44,0xffffff,610);
  }
  if(status_until>SDL_GetTicks()){SDL_Rect r={0,0,640,34};SDL_FillRect(canvas,&r,rgb(canvas,0x12212d));text_at(status,12,4,0xffffff,610);}
- if(ff_hold&&!smoke&&!hide_msg&&(st.waiting==1||st.waiting==3)){SDL_Rect r={572,4,64,20};SDL_FillRect(canvas,&r,rgb(canvas,0x10241c));text_at(">>",578,5,0x7dffa0,50);}
-menu_fade_apply();
 SDL_UpdateTexture(texture,NULL,canvas->pixels,canvas->pitch);
  SDL_RenderClear(renderer);SDL_RenderCopy(renderer,texture,NULL,NULL);SDL_RenderPresent(renderer);
 }
@@ -526,6 +496,9 @@ int save_state(unsigned slot) {
    * retry once when the plain rename is rejected. */
   if(ok&&rename(tmp,path)){remove(path);ok=rename(tmp,path)==0;}
  if(!ok)remove(tmp);
+#ifdef __SWITCH__
+ {extern void switch_hos_commit(void);switch_hos_commit();}
+#endif
  char msg[64];snprintf(msg,sizeof(msg),ok?"Saved slot %u":"Save failed (slot %u)",slot);
  notify_status(msg);note("SAVE %s %s",ok?"OK":"FAIL",path);return ok;
 }
@@ -572,7 +545,12 @@ static unsigned nav_step(unsigned s,int dx,int dy){
   if(dx)return s<10?10:s>=10?0:s;
   int t=(int)s+dy;return t<0?0:t>=(int)n?n-1:(unsigned)t;
  }
- if(kind==2||kind==37||kind==38||kind==45||kind==46){
+ if(kind==2){
+  unsigned base=(s/8)*8,local=s-base,npage=n-base;if(npage>8)npage=8;
+  if(dx){int t=(int)local+dx*4;return t>=0&&t<(int)npage?base+(unsigned)t:s;}
+  int t=(int)s+dy;return t<0?0:t>=(int)n?n-1:(unsigned)t;
+ }
+ if(kind==37||kind==38||kind==45||kind==46){
   if(dx)return s;
   int t=(int)s+dy; if(t<0)t=0; if(t>=(int)n)t=(int)n-1; return (unsigned)t;
  }
@@ -684,7 +662,7 @@ static void album_back(void){
  }
  hide_msg=!hide_msg;gfx_dirty=true;
 }
-static void confirm(void) {if(st.waiting==3){extern void frontend_xfade_skip(void);extern void frontend_fadein_skip(void);frontend_xfade_skip();frontend_fadein_skip();st.waiting=0;}else if(st.waiting==2){if(need_sel)return;note("SRC confirm kind=%u sel=%u",vm_choice_kind(),selected);vm_choose(selected);if(st.waiting!=2)choice_open=false;}else if(!hide_msg)vm_advance(); /* story must not advance while the text box is hidden */}
+static void confirm(void) {if(st.waiting==2&&vm_choice_kind()==37&&title_ui_active()){title_ui_skip();gfx_dirty=true;return;}if(st.waiting==3){extern void frontend_xfade_skip(void);extern void frontend_fadein_skip(void);frontend_xfade_skip();frontend_fadein_skip();ppf_poll(true);st.waiting=0;}else if(st.waiting==2){if(need_sel)return;note("SRC confirm kind=%u sel=%u",vm_choice_kind(),selected);vm_choose(selected);if(st.waiting!=2)choice_open=false;}else if(!hide_msg)vm_advance(); /* story must not advance while the text box is hidden */}
 /* Share the rendering geometry with pointer input; outside taps are not confirms. */
 static int choice_at(int x,int y) {
  if(!choice_open||st.waiting!=2)return -1;
@@ -716,20 +694,30 @@ static int choice_at(int x,int y) {
  if(!vis)return -1;
  int lh=34,y0=104,left=120,right=560;
  if(kind==2) {
-  lh=96/(int)vis;if(lh>26)lh=26;if(lh<14)lh=14;
-  y0=376+(104-(int)vis*lh)/2;left=28;right=612;
+  unsigned start=(selected/8)*8,end=start+8;if(end>choice_count)end=choice_count;
+  for(unsigned i=start;i<end;i++){
+   SDL_Rect r=story_choice_rect(i);
+   if(x>=r.x&&x<r.x+r.w&&y>=r.y&&y<r.y+r.h)return (int)i;
+  }
+  return -1;
  }
  if(x<left||x>=right||y<y0||y>=y0+(int)vis*lh)return -1;
  return (int)base+(y-y0)/lh;
 }
 static void pointer_confirm(int x,int y) {
+ if(st.waiting==2&&vm_choice_kind()==37&&title_ui_active()){title_ui_skip();gfx_dirty=true;return;}
  if(st.waiting==2){int i=choice_at(x,y);if(i<0)return;need_sel=false;selected=(unsigned)i;}
  confirm();
 }
 int main(int argc,char **argv) {
  const char *fontpath=NULL;const char *start="STARTUP.MES";
 #ifdef __SWITCH__
+ /* Full-NSP: game data in the title RomFS, saves in HOS SaveData.  Homebrew
+  * NRO falls back to /switch/KAWAXP on the SD card.  Must run before any
+  * game-data or save file is opened. */
  snprintf(data_dir,sizeof(data_dir),"sdmc:/switch/KAWAXP");
+ {extern void switch_hos_init(char*,size_t,char*,size_t);
+  switch_hos_init(data_dir,sizeof(data_dir),save_dir,sizeof(save_dir));}
 #else
  snprintf(data_dir,sizeof(data_dir),".");
 #endif
@@ -742,17 +730,30 @@ int main(int argc,char **argv) {
   else snprintf(data_dir,sizeof(data_dir),"%s",argv[i]);
  }
  if(!save_dir[0])snprintf(save_dir,sizeof(save_dir),"%s/kawaxp-saves",data_dir);
+#ifndef __SWITCH__
  if(mkdir(save_dir,0755)&&errno!=EEXIST){fprintf(stderr,"Cannot create save directory %s\n",save_dir);return 1;}
+#else
+ /* HOS SaveData root exists once mounted; SD fallback needs the directory. */
+ {extern int switch_save_active;
+  if(!switch_save_active&&mkdir(save_dir,0755)&&errno!=EEXIST){
+   fprintf(stderr,"Cannot create save directory %s\n",save_dir);return 1;}}
+#endif
  char fontbuf[1200];if(!fontpath){snprintf(fontbuf,sizeof(fontbuf),"%s/Kosugi-Regular.ttf",data_dir);fontpath=fontbuf;}
  #ifdef __SWITCH__
-  /* No .log by default (user request). Temporary diagnostic: only when the file
-   * sdmc:/switch/KAWAXP/kawaxp-debug.flag exists, stderr goes to kawaxp.log. */
-  {char fp[1200];snprintf(fp,sizeof(fp),"%s/kawaxp-debug.flag",data_dir);
-   FILE*fk=fopen(fp,"rb");
-   if(fk){fclose(fk);
+  /* Full-NSP: log unconditionally to HOS SaveData (sdmc may be absent).
+   * Homebrew NRO: only when sdmc:/switch/KAWAXP/kawaxp-debug.flag exists.
+   * stderr already points at the sdmc step log from main-enter; duplicate
+   * the important notes there too so a failing NSP leaves save-side trace. */
+  {extern int switch_save_active;
+   bool want_log=switch_save_active!=0;
+   if(!want_log){char fp[1200];snprintf(fp,sizeof(fp),"%s/kawaxp-debug.flag",data_dir);
+    FILE*fk=fopen(fp,"rb");if(fk){fclose(fk);want_log=true;}}
+   if(want_log){
     char lp[1200];snprintf(lp,sizeof(lp),"%s/kawaxp.log",save_dir);
-    FILE*lf=fopen(lp,"w");if(lf){dup2(fileno(lf),2);setvbuf(stderr,NULL,_IOLBF,0);}
-    fprintf(stderr,"KAWAXP debug log start %s\n",lp);}
+    FILE*lf=fopen(lp,"w");if(lf){
+     fprintf(lf,"KAWAXP log (sdmc:%s)\n",save_dir);
+     fclose(lf);}
+   }
   }
  #endif
 if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER)||kawa_text_init()){fprintf(stderr,"SDL: %s\n",SDL_GetError());return 1;}
@@ -908,7 +909,7 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
 #endif
    }
    if(e.type==SDL_MOUSEMOTION&&e.motion.which!=SDL_TOUCH_MOUSEID&&vm_choice_kind()!=2) {
-    int i=choice_at(e.motion.x,e.motion.y);if(i>=0)selected=(unsigned)i;
+    int i=choice_at(e.motion.x,e.motion.y);if(i>=0){selected=(unsigned)i;if(vm_choice_kind()==37&&!title_ui_active())need_sel=false;}
    }
    if(e.type==SDL_MOUSEBUTTONDOWN&&e.button.button==SDL_BUTTON_LEFT&&e.button.which!=SDL_TOUCH_MOUSEID) {
     pointer_confirm(e.button.x,e.button.y);
@@ -920,6 +921,7 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
    }
   }
   Uint32 anim_now=SDL_GetTicks();
+  if(st.waiting==2&&vm_choice_kind()==37&&title_ui_update(anim_now-anim_last))gfx_dirty=true;
   if(st.waiting==2&&vm_choice_kind()==43){
    extern unsigned scene_page;
    if(scene_ui_update(scene_page,vm_menu_value(selected),smoke?AX_TICK_MS:anim_now-anim_last))gfx_dirty=true;
@@ -927,10 +929,11 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
   anim_last=anim_now;
   {extern void frontend_xfade_poll(void);frontend_xfade_poll();}
   {extern void frontend_fadein_poll(void);frontend_fadein_poll();}
+  ppf_poll(ff_hold||getenv("KAWA_FF"));quake_poll();
   /* timed waits end as usual; a util35 wipe keeps waiting until its frames ran */
-  if(st.waiting==3&&!frontend_xfade_active()&&!frontend_fadein_active()&&!hide_msg&&(smoke||(Sint32)(SDL_GetTicks()-st.sys[255])>=0))st.waiting=0;
+  if(st.waiting==3&&!frontend_xfade_active()&&!frontend_fadein_active()&&!frontend_ppf_active()&&!hide_msg&&(smoke||(Sint32)(SDL_GetTicks()-st.sys[255])>=0))st.waiting=0;
   if((ff_hold||getenv("KAWA_FF"))&&!smoke&&!hide_msg) { /* fast-forward paused while text box is hidden */
-   if(st.waiting==3){if(!getenv("KAWA_FFNOSKIP")){extern void frontend_xfade_skip(void);frontend_xfade_skip();}st.waiting=0;}
+   if(st.waiting==3){if(!getenv("KAWA_FFNOSKIP")){extern void frontend_xfade_skip(void);frontend_xfade_skip();frontend_fadein_skip();ppf_poll(true);}if(!frontend_xfade_active()&&!frontend_fadein_active()&&!frontend_ppf_active())st.waiting=0;}
    else if(st.waiting==1)vm_advance();
   }
   if(smoke&&st.waiting==2){
@@ -987,7 +990,7 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
   else {st.var[1]^=123;ax_reset(&animation);if(!load_state(99)||memcmp(&st,&old,sizeof(st))||memcmp(&animation,&oldanim,sizeof(animation)))fail("Smoke save round trip mismatch");else note("SAVE ROUNDTRIP PASS (VM + AX)");}
  }
  note("RESULT messages=%u unsupported=%u waiting=%u script=%s addr=%x",st.messages,unsupported,st.waiting,st.ip.script,st.ip.addr);
- save_ui_close();scene_ui_close();extras_close();audio_fini();if(controller)SDL_GameControllerClose(controller);kawa_font_close(font);SDL_DestroyTexture(texture);SDL_FreeSurface(canvas);
+ title_ui_close();save_ui_close();scene_ui_close();extras_close();audio_fini();if(controller)SDL_GameControllerClose(controller);kawa_font_close(font);SDL_DestroyTexture(texture);SDL_FreeSurface(canvas);
  for(unsigned i=0;i<NSURF;i++)if(surfaces[i])SDL_FreeSurface(surfaces[i]);
  SDL_DestroyRenderer(renderer);SDL_DestroyWindow(window);kawa_text_fini();SDL_Quit();return st.waiting==99?1:0;
 }

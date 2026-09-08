@@ -167,8 +167,10 @@ static void flag_unpack(const unsigned char *f) {
  }
 }
 static void flag_bank(bool write) {
- char path[1200];snprintf(path,sizeof(path),"%s/flag0100",save_dir);
+ char path[1200];snprintf(path,sizeof(path),"%s/FLAG0100",save_dir);
  FILE *f=fopen(path,write?"wb":"rb");
+ if(!f&&!write){ /* migrate/accept the legacy lowercase name (PC 全图存档 etc.) */
+  snprintf(path,sizeof(path),"%s/flag0100",save_dir);f=fopen(path,"rb");}
  if(!f){if(write)fail("Cannot write global flag bank");return;}
  if(write) {
   unsigned char file[FLAG_FILE_SIZE] = {0};
@@ -180,8 +182,14 @@ static void flag_bank(bool write) {
   unsigned char file[FLAG_FILE_SIZE];
   size_t n=fread(file,1,sizeof(file),f);
   if(n==sizeof(file))flag_unpack(file);else if(n)fail("Bad global flag bank file");
+  if(getenv("KAWA_FLAGDUMP"))note("LOADFLAG 152=%d 199=%d 200=%d 201=%d 306=%d 320=%d 321=%d 322=%d 385=%d 400=%d 401=%d 424=%d 440=%d 985=%d 1494=%d",
+   st.flag[152],st.flag[199],st.flag[200],st.flag[201],st.flag[306],st.flag[320],st.flag[321],st.flag[322],
+   st.flag[385],st.flag[400],st.flag[401],st.flag[424],st.flag[440],st.flag[985],st.flag[1494]);
  }
  fclose(f);note("FLAGBANK %s %s",write?"SAVE":"LOAD",path);
+#ifdef __SWITCH__
+ if(write){extern void switch_hos_commit(void);switch_hos_commit();}
+#endif
 }
 static void savedata_op(bool write,mes_parameter_list p) {
  unsigned idx=par(p,0),slot=par(p,1);
@@ -236,7 +244,7 @@ static void util(mes_parameter_list p) {
    copy_rect(0,0,639,479,1,0,0,0,false);break; }
   case 5:case 6:copy_rect(0,0,639,479,1,0,0,0,false);break;
  case 7:fail("Util 7 transition not yet implemented");break;
- case 8:copy_rect(par(p,1),par(p,2),par(p,1)+par(p,3)-1,par(p,2)+par(p,4)-1,1,par(p,1),par(p,2),0,true);break;
+ case 8:if(frontend_ppf_start(par(p,1),par(p,2),par(p,3),par(p,4))){st.waiting=3;st.sys[255]=SDL_GetTicks();}break;
  case 24: { /* util24 anim_wait: mode 4 = show staged image (title_bg/CG),
             * 4th arg 1 = fade it in from black (AI.exe 0x43d3e0 family). */
    unsigned mode=par(p,1);
@@ -252,7 +260,7 @@ static void util(mes_parameter_list p) {
            * frame staged on surface 1 over the current display (surface 0), phased per
            * the %02u.msk reveal values; VM pauses ~0.6s while it plays (smoke: instant). */
   {extern bool frontend_xfade_start(unsigned);
-   if(frontend_xfade_start(a)){st.waiting=3;st.sys[255]=SDL_GetTicks()+300;}}
+   if(frontend_xfade_start(a)){st.waiting=3;st.sys[255]=SDL_GetTicks();}}
   break;
  case 36:case 39:case 47:case 49:break; // Win32 menu/auto-mode controls
  case 37: { // engine title menu (0x43eb2c). START.MES dispatch reads var32[18]:
@@ -271,6 +279,7 @@ static void util(mes_parameter_list p) {
   }
   unsigned c=0;const char *items[6];
   for(unsigned k=0;k<6;k++)if(enabled[k]){items[c]=titles[k];menu_nums[c++]=tno[k];}
+  if(getenv("KAWA_FLAGDUMP"))note("TITLE37 en=%d%d%d%d%d%d nums=%d,%d,%d,%d,%d,%d",enabled[0],enabled[1],enabled[2],enabled[3],enabled[4],enabled[5],menu_nums[0],menu_nums[1],menu_nums[2],menu_nums[3],menu_nums[4],menu_nums[5]);
   menu_nums[c]=0;choice_kind=37;set_choices(items,c,2);st.waiting=2;break; }
  case 38:slot_page=0;slot_pending=-1;save_ui_scan();storage_menu(38);break;
  case 40:st.var[9]=0;st.waiting=1;break; // hold splash until advance (OVER3/16/18/SAMPLE)
@@ -279,13 +288,14 @@ static void util(mes_parameter_list p) {
   for(unsigned k=0;k<16;k++){items[k]=k<14?music_files[k]:k==14?"停止":"タイトルに戻る";menu_nums[k]=k;}
   choice_kind=41;set_choices(items,16,2);st.waiting=2;break; }
  case 42: { // ending replay select (AI.exe util42=0x43ebe0): var32[18]=1..19, 戻る=0
+  if(getenv("KAWA_FLAGDUMP")){unsigned n=0;for(unsigned k=1;k<=19;k++)if(extras_enabled(42,k))n++;note("EXTRAS42 unlocked=%u/19",n);}
   static char lbl[20][24];unsigned c=0;const char *items[20];
   for(unsigned k=1;k<=19;k++){snprintf(lbl[c],24,"エンディング%d",k);
    items[c]=lbl[c];menu_nums[c]=k;c++;}
   items[c]="戻る";menu_nums[c]=0;c++;
   menu_nums[c]=0;choice_kind=42;set_choices(items,c,2);st.waiting=2;break; }
- case 43:scene_menu_open();break;
- case 44:vm_album_menu();break;
+ case 43:if(getenv("KAWA_FLAGDUMP")){unsigned n=0;for(unsigned p=0;p<8;p++)for(unsigned v=1;v<=5;v++)if(st.flag[401+p*5+(v-1)]==1)n++;note("EXTRAS43 unlocked=%u/40",n);}scene_menu_open();break;
+ case 44:if(getenv("KAWA_FLAGDUMP")){unsigned n=0;for(unsigned v=1;v<=123;v++)if(extras_enabled(44,v))n++;note("EXTRAS44 unlocked=%u/123",n);}vm_album_menu();break;
  case 45:st.var[18]=1+(rand()&1);break;
  case 46:st.waiting=1;break; // page-hold until advance (CG album etc.)
  case 48: { // timed wait, arg = 1/20 s ticks (credits pacing: 4000/20 etc.)
@@ -438,8 +448,8 @@ void vm_album_menu(void){
  if(st.var[20]>7)st.var[20]=0;
  unsigned first=st.var[20]*16+1,last=first+16;if(last>124)last=124;
  for(unsigned v=first;v<last;v++){snprintf(labels[c],24,"CG %u",v);items[c]=labels[c];menu_nums[c++]=v;}
- const unsigned controls[4]={EXTRA_PREV,EXTRA_NEXT,0,EXTRA_PLAY};
- const char *names[4]={"前頁","次頁","タイトルに戻る","連続再生"};
+ const unsigned controls[4]={EXTRA_PREV,EXTRA_NEXT,EXTRA_PLAY,0};
+ const char *names[4]={"前頁","次頁","連続再生","タイトルに戻る"};
  for(unsigned k=0;k<4;k++){items[c]=names[k];menu_nums[c++]=controls[k];}
  choice_kind=44;set_choices(items,c,2);st.waiting=2;frontend_refresh();
 }

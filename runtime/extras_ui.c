@@ -55,8 +55,8 @@ bool extras_rect(unsigned kind,unsigned v,SDL_Rect *r){
   if(v>=1&&v<=123){unsigned i=(v-1)%16;*r=(SDL_Rect){66+132*(i%4),24+100*(i/4),112,84};return true;}
   if(v==EXTRA_PREV)*r=(SDL_Rect){64,432,80,24};
   else if(v==EXTRA_NEXT)*r=(SDL_Rect){228,432,80,24};
-  else if(!v)*r=(SDL_Rect){328,432,100,24};
-  else if(v==EXTRA_PLAY)*r=(SDL_Rect){452,432,124,24};else return false;
+  else if(!v)*r=(SDL_Rect){452,432,124,24};
+  else if(v==EXTRA_PLAY)*r=(SDL_Rect){328,432,100,24};else return false;
   return true;
  }
  return false;
@@ -110,7 +110,7 @@ void extras_draw(SDL_Surface *canvas,unsigned kind,unsigned selected){
   for(unsigned i=0;i<4;i++){
    SDL_Rect r;extras_rect(kind,controls[i],&r);
    int state=!extras_enabled(kind,controls[i])?3:selected==controls[i]?1:0;
-   put(surfaces[8],canvas,sx[i],24*state,r.w,r.h,r.x,r.y);
+   ax_blit(surfaces[8],canvas,sx[i],24*state,r.w,r.h,r.x,r.y);
   }
  }
 }

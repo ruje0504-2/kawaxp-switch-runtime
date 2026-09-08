@@ -71,3 +71,6 @@ void audio_init(void);
 void audio_fini(void);
 int save_state(unsigned slot);
 int load_state(unsigned slot);
+
+bool frontend_ppf_start(int x,int y,int w,int h);
+bool frontend_ppf_active(void);

@@ -1,3 +1,53 @@
+> **2026-09-08 NSP 直装最终修复（可进游戏）**：用户实机验证最小 SDL NSP 全步骤正常 → 定位
+> 崩溃为本 runtime 特有代码。两级根因：
+> ① **双斜杠路径**：switch_hos 把 data_dir 设 `romfs:/`、save_dir 设 `save:/`（带尾斜杠），
+>    引擎 `"%s/xxx"` 拼接得 `romfs://mes.ARC`/`save://FLAG0100`，fsdev devoptab 打不开 →
+>    现存 `romfs:`/`save:` 无尾斜杠，拼出正确的 `romfs:/…`；
+> ② **FreeType romfs 文件流不兼容**：FT_New_Face 内部 seek/tell 在 romfs devoptab 失败 →
+>    字体改整文件读入内存 + `FT_New_Memory_Face`（buffer 随 font 保存、close 释放）。
+> 另：NSP 模式日志无条件写 `save:/kawaxp.log`；NRO 只在 debug.flag 存在时写（恢复原行为）。
+> 诊断 STEP 日志（sdmc:/kawaxp-step.log）任务完成后已全部移除。
+> NSP MD5 `f2128943fb6ba00ab5cf8a53ce348105`；NRO MD5 `de9fa2b250bf2e34f8fc79e3338dd25f`，三处一致，已同步 Codex。
+
+> **2026-09-08 快进图标删除**：用户嫌右上角快进 ">>" 角标丑，frontend.c 移除其绘制（深框+绿箭头），
+> 快进功能本身保留。
+
+> **2026-09-08 开机标题+CG按钮**：新增标题首屏淡入→11.msk逐级变红→菜单独立淡入；演出输入只跳过、不误启动。修复CG连续再生/返回标题宽度和位置，按钮用键色合成，菜单顺序同步。见 [reports/title-intro-20260908.md](reports/title-intro-20260908.md)。host/Switch及状态机测试通过；实机时长待对拍。
+
+> **2026-09-08 文本布局**：正文起点改为原版 (32,400)，消息窗仍 (0,376,640,104)；分支选项固定 y392+18×行，四行一列、超过四项双列，触屏与方向键同步。无框样式保留。详见 [reports/text-layout-20260908.md](reports/text-layout-20260908.md)。
+
+> **2026-09-08 本轮特效修复**：util34 改为脚本启停的80ms逐行余弦位移；util35 改为11个软alpha相位+终帧；util8 加入scratch与上下交错条带。host/Switch构建及原始mask像素测试、s10/s12各400消息通过。UI未改。逐帧实机校准仍待完成，证据与限制见 [reports/effects-20260908.md](reports/effects-20260908.md)。旧“435c10=quake/8bit调色板”说明已被反汇编纠正。
+
+> **2026-09-08 菜单渐显改 alpha 淡入（废除区域 brightness）**：用户多轮反馈标题菜单渐显呈"黑块"。
+> 根因：Codex title_ui phase2 对菜单区 (116,244,408,216) 整块做 brightness()（RGB×value，背景与按钮一起压暗→黑矩形观感）。
+> 现改为**仅按钮 alpha 淡入**：背景/红 logo 全亮不动，按钮源复制到临时面→alpha 通道×f(step*16 0→255)→ax_blit 混合；
+> 无任何区域压暗，渐显不再有黑块。phase0/1（logo 灰→红 intro）未动。host/Switch 编译通过，NRO MD5 `6861fbcbcc7bc612a906a84e3fd9712e`，已同步 Codex。
+
+> **2026-09-08 NRO 图标**：`elf2nro --icon` 嵌入 256×256 JPEG 图标——主界面背景 title_bg(640×480)
+> 叠加 title_pt 红 logo 帧(0,768,584,120 → 28,108)，等比缩至 256×256 黑边居中。
+> 产物：`assets/kawaxp-icon.jpg/.png`、`assets/title-preview.png`（640×480 预览，放 outputs/KAWAXP-port/ 根目录即工程 `assets/`）。
+> NRO MD5 变更为 `93315a81ff3cd83af619cce28ef90b27`，已同步 Codex。
+
+> **2026-09-08 NRO 名称/作者**：按用户要求 nacptool 生成 name=`kawa`、author=`elf`（build-switch.sh 已同步），
+> NRO MD5 `4790d02df9e7ed04c80857dea9e3ab15`，三处部署一致，已同步 Codex。
+
+> **2026-09-08 PC 全图存档适配 + FLAG0100 大写命名**：用户提供真实 PC 全图档 `PC全图存档/flag0100`
+> （344 个 4-bit 旗标置位）。引擎 FLAG0100 格式原本就兼容，host 实测：标题菜单 6 项全解锁
+> （はじめから/ロード/サウンド/アルバム/シーン/エンディング），存档可直接放
+> `sdmc:/switch/KAWAXP/kawaxp-saves/` 生效。
+> 另按用户要求（为 NSP 直装准备）：flag 文件读写名 `flag0100` → **`FLAG0100`**（与 PC 原版一致），
+> 读取时大写优先、旧小写回退（兼容已放置的小写全图档）；KAWA_FLAGDUMP 下新增读后 flag dump
+> 与标题/回想/相册/场景解锁计数诊断。NRO MD5 `263bd7a4aa6571edb6aaa819fa7ee8dc`，已同步 Codex。
+
+> **2026-09-08 NSP 直装打包**：参考 `AI5-SDL2-SWITCH/make-nsp.sh` 实现完整 NSP：
+> - **titleid** `0100E6B2B3E50000`（0100 + "河原崎家"UTF-8 前4字节 E6B2B3E5 + 0000）
+> - 名字「河原崎家の一族」、作者 elf、icon=assets/kawaxp-icon.jpg
+> - 数据(mes/gcc/sequence.ARC + bgm/effect*.AWF + voice.ARC + 字体)进 **RomFS**，存档走 **HOS SaveData**
+> - 新增 `runtime/switch_hos.c/h`（__SWITCH__）：挂 romfs:/ 与 save:/ 并设 data_dir/save_dir；
+>   写档点(slot/FLAG0100/memo)后 `fsdevCommitDevice("save")`；NRO 模式回退 sdmc 原路径
+> - `./make-nsp.sh` → `0100E6B2B3E50000.nsp`（465MB，PFS0，hacbrewpack v3.05 打包成功）
+> - NRO MD5 `f34222fe026ba7e69a62fcbf228e2d3a`（含 HOS 存储层），三处一致，已同步 Codex
+
 # KAWAXP 交接：AX 已接入（2026-09-08 更新）
 
 > **本轮最新：kind43 Scene 已接入原版胶片 UI，并修复 L/R 翻页不重绘。**
@@ -7,7 +57,17 @@
 
 ## 🎯 给 Codex 的当前任务清单（优先做）
 
-### 0. 回想结束 BGM 恢复（同曲名问题修正）（2026-09-08 修订）
+### 0. 标题菜单渐显＝按钮 alpha 淡入（2026-09-08 最终定案，取代下述 brightness 各版）
+- 用户确认：菜单保留渐显，但**禁止用亮度(brightness)压暗整区**（100→255 也仍呈黑块）。
+- 现实现（title_ui.c）：phase2 时 red 全屏（背景+红logo 已全亮）→ 每个按钮经 ax_blit_faded()
+  复制源→alpha×f(step 0..16→f 0..255)→ax_blit 混入；区域背景从不被乘暗，无黑矩形。
+- 保留标题 fadein(util24) 黑→亮 与 phase0/1 logo intro；`brightness()` 仅剩 phase0 全屏 intro 用。
+- NRO 已同步（DeepSeek 侧 MD5 需取 `md5 kawaxp.nro` 更新），已同步 Codex 源码镜像。
+
+### 0.1. 菜单渐显恢复（从菜单前画面帧淡入，非全黑）（2026-09-08 已废弃）
+- 移除版(base=surfaces[0] 黑→全黑)被否；恢复 menu_fade 且 base=打开前 canvas 历史帧
+  （标题画面），仅新增菜单元素淡入。host 截图正常（无黑框/非全黑）。NRO MD5 `dc6f62` 前版作废。
+- 若 Switch 仍全黑/黑框：属像素观感，交 Codex 实机定位（base 历史帧来源/标题 fadein 是否落 canvas）。
 - 上一版 restore 用 strcmp(saved,cur) 跳过同曲名 → 回想シーン1(EVENT01) 与主界面同用 yokan 时
   离开回放全停后不重播 → 无声（其它回想用不同曲名正常）。
 - 修复：audio_bgm_restore() 无条件重播快照曲（全停已静音 ch0，必恢复）。

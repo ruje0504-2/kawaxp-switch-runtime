@@ -1,15 +1,28 @@
 # build artifacts
 *.nro
 *.elf
+*.nsp
+*.nacp
+
+# workdir scratch (host test runs, pcflag tests, dumps)
+/work/
+/KAWAXP-switch-*.zip
+/publish/
 
 # verification screenshots/logs under reports/ (contain game visuals); keep the build note
 reports/*
 !reports/BUILD-0.3.0.md
 
-# runtime saves / local logs
+# runtime saves / local logs / pc flag fixtures
 *.kws
 *.log
+/flag0100
+/FLAG0100
+kawaxp-saves/
 
 # macOS
 .DS_Store
 subprojects/.wraplock
+
+# baidu cloud upload leftovers
+.*.uploading.cfg

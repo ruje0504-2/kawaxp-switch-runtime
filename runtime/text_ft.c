@@ -13,7 +13,8 @@
 #include FT_FREETYPE_H
 #include <stdlib.h>
 #include <string.h>
-struct kawa_font { FT_Face face; FT_Library lib; int px; };
+#include <stdio.h>
+struct kawa_font { FT_Face face; FT_Library lib; int px; unsigned char *fdata; long fsize; };
 static FT_Library g_lib;
 static int g_lib_ok;
 
@@ -68,11 +69,28 @@ struct kawa_font *kawa_font_open(const char *path, int px) {
 	struct kawa_font *k = calloc(1, sizeof(*k));
 	if (!k) return NULL;
 	k->px = px; k->lib = g_lib;
-	if (FT_New_Face(g_lib, path, 0, &k->face)) { free(k); return NULL; }
+	/* Load the whole font into memory and use FT_New_Memory_Face: on the
+	 * full-NSP layout the file sits in the title RomFS whose devoptab
+	 * stream (seek/tell) is not fully compatible with FT_New_Face's file
+	 * IO, while plain fopen/fread works everywhere (sdmc + romfs). */
+	FILE *f = fopen(path, "rb");
+	if (f) {
+		fseek(f, 0, SEEK_END);
+		k->fsize = (long)ftell(f);
+		fseek(f, 0, SEEK_SET);
+		if (k->fsize > 0) k->fdata = malloc((size_t)k->fsize);
+		if (k->fdata && fread(k->fdata, 1, (size_t)k->fsize, f) != (size_t)k->fsize) { free(k->fdata); k->fdata = NULL; }
+		fclose(f);
+	}
+	if (!k->fdata || FT_New_Memory_Face(g_lib, k->fdata, (FT_Long)k->fsize, 0, &k->face)) {
+		if (k->fdata) free(k->fdata);
+		free(k);
+		return NULL;
+	}
 	FT_Set_Pixel_Sizes(k->face, 0, px);
 	return k;
 }
-void kawa_font_close(struct kawa_font *k) { if (k) { FT_Done_Face(k->face); free(k); } }
+void kawa_font_close(struct kawa_font *k) { if (k) { if (k->face) FT_Done_Face(k->face); if (k->fdata) free(k->fdata); free(k); } }
 static unsigned next_cp(const char **sp) {
 	const unsigned char *s = (const unsigned char *)*sp;
 	unsigned c = s[0]; int n = 1;

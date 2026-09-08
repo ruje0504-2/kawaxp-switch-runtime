@@ -118,5 +118,8 @@ void save_ui_write_memo(unsigned slot){
  char path[1200],temp[1200];path_for(path,sizeof(path),slot,"memo");path_for(temp,sizeof(temp),slot,"memo.tmp");
  FILE *f=fopen(temp,"wb");if(!f)return;size_t n=strlen(memo);bool ok=fwrite(memo,1,n,f)==n;if(fclose(f))ok=false;
  if(ok)rename(temp,path);else remove(temp);
+#ifdef __SWITCH__
+ {extern void switch_hos_commit(void);switch_hos_commit();}
+#endif
 }
 void save_ui_close(void){for(unsigned i=0;i<2;i++)if(background[i]){SDL_FreeSurface(background[i]);background[i]=NULL;}if(parts)SDL_FreeSurface(parts);parts=NULL;editing=false;slot_pending=-1;}
