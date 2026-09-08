@@ -2,7 +2,27 @@
 
 ## 🎯 给 Codex 的当前任务清单（优先做）
 
-### 0. OVER 排除细化：仅禁エンディング鉴赏回放（2026-09-08 修订）
+### 0. util35 残留修复：mask==255 像素末步 reveal（2026-09-08 第三轮）
+- 现象：转场平滑后仍有一列/簇菱形残留。
+- 根因：reveal 条件 `mrow[x]<th`，末步 th=255 时 **==255 的像素永不 reveal**（06.msk 有 930px==255）。
+- 修复：改 `<=`，末步全 reveal。NRO MD5 `85f54041`，已同步 Codex。
+
+### 0.1. util35 转场不上屏根因修复（2026-09-08 第二轮）
+- 真因：xfade_poll 每步写入 surfaces[0] 但**未置 gfx_dirty** → present 复用旧纹理，
+  转场画面不上屏（实机"必须按键才刷新"）。
+- 修复：① poll 每步重绘后 gfx_dirty=true；② waiting==3 放行条件加 `!frontend_xfade_active()`
+  （util35 wipe 播完才恢复 VM，避免提前被后续绘制覆盖）；导出 frontend_xfade_active()。
+- 保留：等像素分位步进（上一轮，06.msk 每步 reveal ~1/12）。NRO MD5 `477e705a`，已同步 Codex。
+- util35 像素级仍属 Codex TASK-QUAKE 校准范围。
+
+### 0.1. util35 masked 转场平滑化（2026-09-08 第一轮）
+- 现象：回想(EVENT01 @56 util35(6))/转场只看到右侧残留块、"下一帧才刷掉"。
+- 根因：mask 06.msk 数值分布不均（值>=128 占 2/3），原线性阈值(step*255/12)前半几乎不动、后半突变。
+- 修复：frontend_xfade 步进阈值改为**等像素分位**（每步 reveal ~总/12，实测增量 24-27k/步），过渡平滑。
+- 结局(OVER2)开头无 util35（仅 util34/黑场），エンディング→OVER 为直切，非本转场。
+- util35 视觉精确性仍属 Codex 像素校准范畴（TASK-QUAKE）。NRO MD5 `53b24128`，已同步 Codex。
+
+### 0.1. OVER 排除细化：仅禁エンディング鉴赏回放（2026-09-08 修订）
 - vm.c：新增 `ending_replay_flag`——在 util42(エンディング)菜单选中具体结局（非戻る）时置位，
   vm_step 离开 OVER/CREDITS 脚本时清除；`in_replay_view()` 对 OVER 仅当 flag 为真才判为回放。
 - 效果：**真实流程的结局(overXX)允许存读档**；只有从エンディング鉴赏进入的回放 OVER 仍禁止。

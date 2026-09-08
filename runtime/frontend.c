@@ -84,7 +84,8 @@ void frontend_msk_note(unsigned idx){(void)msk_get(idx);}
  * thresholds, phased over ~12 steps so the old picture is still visible while it is
  * being covered (not an instant black-out / opaque replace). In smoke it completes
  * instantly. */
-static struct { bool on; unsigned idx; SDL_Surface *from; unsigned step; unsigned steps; Uint32 next; } xf;
+static struct { bool on; unsigned idx; SDL_Surface *from; unsigned step; unsigned steps; Uint32 next;
+ unsigned char ths[16]; /* equal-pixel-quantile step thresholds */ } xf;
 bool frontend_xfade_start(unsigned idx) {
  if(smoke||!surfaces[0]||!surfaces[1]){
   if(surfaces[0]&&surfaces[1]){SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[1],&r,surfaces[0],&r);}
@@ -104,10 +105,19 @@ bool frontend_xfade_start(unsigned idx) {
   if(!xf.from){SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[1],&r,surfaces[0],&r);return false;}
   SDL_SetSurfaceBlendMode(xf.from,SDL_BLENDMODE_NONE);
   {SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[0],&r,xf.from,&r);}
+  /* step thresholds at equal pixel counts (mask values are NOT uniform; naive
+   * linear thresholds stall then jump, leaving a stuck right-hand blob) */
+  {const uint8_t *mm=msk_data[idx<16?idx:0];
+   unsigned hist[256]={0};for(int i=0;i<307200;i++)hist[mm[i]]++;
+   unsigned acc=0,k=1;
+   for(int v=0;v<256&&k<=12;v++){acc+=hist[v];while(k<=12&&acc>=(unsigned)(307200u*k)/12u)xf.ths[k++]=(unsigned char)v;}
+   while(k<=12)xf.ths[k++]=255;
+   xf.ths[0]=0;}
   xf.on=true;xf.idx=idx;xf.step=0;xf.steps=12;xf.next=SDL_GetTicks()+20;
  }
  return true;
 }
+bool frontend_xfade_active(void){return xf.on;}
 void frontend_xfade_poll(void) {
  if(!xf.on)return;
  if((Sint32)(SDL_GetTicks()-xf.next)<0)return;
@@ -116,17 +126,21 @@ void frontend_xfade_poll(void) {
  SDL_Surface*dst=surfaces[0],*to=surfaces[1];
  const uint8_t*m=xf.idx<16?msk_data[xf.idx]:NULL;
  if(!m||!dst||!to||!xf.from){xf.on=false;if(xf.from)SDL_FreeSurface(xf.from);xf.from=NULL;return;}
- unsigned th=(xf.step*255)/xf.steps;
+ unsigned th=xf.step<=12?xf.ths[xf.step]:255;
  unsigned char*dp=(unsigned char*)dst->pixels,*fp=(unsigned char*)xf.from->pixels,*tp=(unsigned char*)to->pixels;
  int dpitch=dst->pitch,fpitch=xf.from->pitch,tpitch=to->pitch;
  for(int y=0;y<480;y++){
   const unsigned char*mrow=m+y*640;
   unsigned char*drow=dp+y*dpitch,*frow=fp+y*fpitch,*trow=tp+y*tpitch;
   for(int x=0;x<640;x++){
-   if(mrow[x]<th)memcpy(drow+x*4,trow+x*4,4);
+   if(mrow[x]<=th)memcpy(drow+x*4,trow+x*4,4); /* <= so mask value 255 reveals on the last step */
    else memcpy(drow+x*4,frow+x*4,4);
   }
  }
+ /* the wipe wrote into surface 0: mark the canvas dirty or the frame loop will
+  * keep showing the old texture and the transition stalls until input/state
+  * forces a repaint */
+ gfx_dirty=true;
  if(xf.step>=xf.steps){xf.on=false;SDL_FreeSurface(xf.from);xf.from=NULL;}
 }
 void frontend_xfade_skip(void) { /* finish instantly on click/ff */
@@ -813,7 +827,8 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
   }
   Uint32 anim_now=SDL_GetTicks();animation_update(smoke?AX_TICK_MS:anim_now-anim_last);anim_last=anim_now;
   {extern void frontend_xfade_poll(void);frontend_xfade_poll();}
-  if(st.waiting==3&&(smoke||(Sint32)(SDL_GetTicks()-st.sys[255])>=0))st.waiting=0;
+  /* timed waits end as usual; a util35 wipe keeps waiting until its frames ran */
+  if(st.waiting==3&&!frontend_xfade_active()&&(smoke||(Sint32)(SDL_GetTicks()-st.sys[255])>=0))st.waiting=0;
   if((ff_hold||getenv("KAWA_FF"))&&!smoke) { /* fast-forward: skip timed waits, auto-advance dialogue; stop at choices/menus */
    if(st.waiting==3){if(!getenv("KAWA_FFNOSKIP")){extern void frontend_xfade_skip(void);frontend_xfade_skip();}st.waiting=0;}
    else if(st.waiting==1)vm_advance();
