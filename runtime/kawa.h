@@ -56,6 +56,8 @@ void frontend_quake(unsigned level); /* 0=stop, >0=start screen shake at that le
 void frontend_msk_note(unsigned idx); /* util35 transition mask index validation */
 bool frontend_xfade_start(unsigned idx); /* util35 masked crossfade: true while animating */
 bool frontend_xfade_active(void);  /* true while the wipe frames are still running */
+bool frontend_fadein_start(void); /* util4 page fade-in from black; true while animating */
+bool frontend_fadein_active(void);
 void set_choices(const char **items,unsigned count,int kind);
 void audio_load(int ch,const char *name);
 void audio_play(int ch,bool loop);
@@ -63,6 +65,8 @@ void audio_stop(int ch);
 void audio_stop_all(void); /* silence all channels, cancel pending decodes */
 void audio_stop_voice_se(void); /* stop voice/SE only, keep ch0 BGM */
 extern int audio_bgm_dirty;   /* ch0 load happened since last replay */
+void audio_bgm_snapshot(void); /* remember ch0 track before a replay */
+void audio_bgm_restore(void);  /* resume that ch0 track after a replay */
 void audio_init(void);
 void audio_fini(void);
 int save_state(unsigned slot);

@@ -120,6 +120,74 @@ bool frontend_xfade_start(unsigned idx) {
  return true;
 }
 bool frontend_xfade_active(void){return xf.on;}
+/* util4 = page fade-in from black (AI.exe 0x43e788): draw the staged page at
+ * growing brightness 0..255, one frame at a time; any input skips to full. */
+static struct { bool on; unsigned step,steps; Uint32 next; } fd;
+bool frontend_fadein_start(void){
+ if(smoke||!surfaces[0]||!surfaces[1]){
+  if(surfaces[0]&&surfaces[1]){SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[1],&r,surfaces[0],&r);}
+  return false;
+ }
+ fd.on=true;fd.step=0;fd.steps=12;fd.next=SDL_GetTicks()+20;
+ return true;
+}
+void frontend_fadein_poll(void){
+ if(!fd.on)return;
+ if((Sint32)(SDL_GetTicks()-fd.next)<0)return;
+ fd.next=SDL_GetTicks()+20;
+ fd.step++;
+ unsigned tt=(fd.step*255)/fd.steps;if(tt>255)tt=255;
+ SDL_Surface*dst=surfaces[0],*to=surfaces[1];
+ if(!dst||!to){fd.on=false;return;}
+ unsigned char*dp=(unsigned char*)dst->pixels,*tp=(unsigned char*)to->pixels;
+ int dpitch=dst->pitch,tpitch=to->pitch;
+ int w=dst->w<to->w?dst->w:to->w,h=dst->h<to->h?dst->h:to->h;
+ for(int y=0;y<h;y++){
+  unsigned char*drow=dp+y*dpitch,*trow=tp+y*tpitch;
+  for(int x=0;x<w;x++){
+   drow[x*4]=(unsigned char)((unsigned)trow[x*4]*tt>>8);
+   drow[x*4+1]=(unsigned char)((unsigned)trow[x*4+1]*tt>>8);
+   drow[x*4+2]=(unsigned char)((unsigned)trow[x*4+2]*tt>>8);
+   drow[x*4+3]=255;
+  }
+ }
+ gfx_dirty=true;
+ if(fd.step>=fd.steps)fd.on=false;
+}
+void frontend_fadein_skip(void){
+ if(fd.on){
+  if(surfaces[0]&&surfaces[1]){SDL_Rect r={0,0,640,480};SDL_BlitSurface(surfaces[1],&r,surfaces[0],&r);}
+  fd.on=false;gfx_dirty=true;
+ }
+}
+bool frontend_fadein_active(void){return fd.on;}
+/* engine menu fade-in: when an engine menu opens, blend from the frame shown
+ * just before it to the menu frame over ~12 steps (menus appear progressively
+ * over the title/scene image). */
+static SDL_Surface *mf_base;static unsigned mf_step;static Uint32 mf_next;static bool mf_on;
+static void menu_fade_start(void){
+ if(mf_on||!canvas)return;
+ mf_base=SDL_ConvertSurface(canvas,canvas->format,0);
+ mf_on=(mf_base!=NULL);mf_step=0;mf_next=SDL_GetTicks()+20;
+}
+static void menu_fade_apply(void){
+ if(!mf_on||!mf_base)return;
+ if(mf_step<12&&(Sint32)(SDL_GetTicks()-mf_next)>=0){mf_next=SDL_GetTicks()+20;mf_step++;}
+ unsigned s=mf_step;if(s>12)s=12;
+ unsigned char*dp=(unsigned char*)canvas->pixels,*bp=(unsigned char*)mf_base->pixels;
+ int pitch=canvas->pitch,bpitch=mf_base->pitch;
+ int w=canvas->w<640?canvas->w:640,h=canvas->h<480?canvas->h:480;
+ for(int y=0;y<h;y++){
+  unsigned char*drow=dp+y*pitch,*brow=bp+y*bpitch;
+  for(int x=0;x<w;x++){
+   unsigned b0=brow[x*4],b1=brow[x*4+1],b2=brow[x*4+2];
+   drow[x*4]=(unsigned char)((b0*(12-s)+drow[x*4]*s)/12);
+   drow[x*4+1]=(unsigned char)((b1*(12-s)+drow[x*4+1]*s)/12);
+   drow[x*4+2]=(unsigned char)((b2*(12-s)+drow[x*4+2]*s)/12);
+  }
+ }
+ if(mf_step>=12){mf_on=false;SDL_FreeSurface(mf_base);mf_base=NULL;}
+}
 void frontend_xfade_poll(void) {
  if(!xf.on)return;
  if((Sint32)(SDL_GetTicks()-xf.next)<0)return;
@@ -351,11 +419,14 @@ void frontend_present(void) {
    snprintf(last_msg,sizeof(last_msg),"%s",st.text);gfx_dirty=true;}
  if(last_wait!=st.waiting){last_wait=st.waiting;gfx_dirty=true;}
  if(last_sel!=selected){last_sel=selected;gfx_dirty=true;}
- if(last_cho!=choice_open){last_cho=choice_open;gfx_dirty=true;}
+ if(last_cho!=choice_open){last_cho=choice_open;gfx_dirty=true;
+  if(choice_open&&st.waiting==2&&vm_choice_kind()!=2)menu_fade_start();
+ }
  if(last_hide!=hide_msg){last_hide=hide_msg;gfx_dirty=true;}
  if(last_ff!=ff_hold){last_ff=ff_hold;gfx_dirty=true;}
  {bool st_now=status_until>SDL_GetTicks(); if(st_now!=last_status){last_status=st_now;gfx_dirty=true;} if(st_now)gfx_dirty=true;}
  if(quake_level&&(SDL_GetTicks()-quake_start)<3000)gfx_dirty=true; /* moving */
+ if(mf_on)gfx_dirty=true; /* menu fade needs a fresh canvas every frame */
  if(!gfx_dirty){ /* nothing changed: reuse last uploaded texture */
   SDL_RenderClear(renderer);SDL_RenderCopy(renderer,texture,NULL,NULL);SDL_RenderPresent(renderer);
   return;
@@ -432,6 +503,7 @@ void frontend_present(void) {
  }
  if(status_until>SDL_GetTicks()){SDL_Rect r={0,0,640,34};SDL_FillRect(canvas,&r,rgb(canvas,0x12212d));text_at(status,12,4,0xffffff,610);}
  if(ff_hold&&!smoke&&!hide_msg&&(st.waiting==1||st.waiting==3)){SDL_Rect r={572,4,64,20};SDL_FillRect(canvas,&r,rgb(canvas,0x10241c));text_at(">>",578,5,0x7dffa0,50);}
+menu_fade_apply();
 SDL_UpdateTexture(texture,NULL,canvas->pixels,canvas->pitch);
  SDL_RenderClear(renderer);SDL_RenderCopy(renderer,texture,NULL,NULL);SDL_RenderPresent(renderer);
 }
@@ -612,7 +684,7 @@ static void album_back(void){
  }
  hide_msg=!hide_msg;gfx_dirty=true;
 }
-static void confirm(void) {if(st.waiting==3){extern void frontend_xfade_skip(void);frontend_xfade_skip();st.waiting=0;}else if(st.waiting==2){if(need_sel)return;vm_choose(selected);if(st.waiting!=2)choice_open=false;}else if(!hide_msg)vm_advance(); /* story must not advance while the text box is hidden */}
+static void confirm(void) {if(st.waiting==3){extern void frontend_xfade_skip(void);extern void frontend_fadein_skip(void);frontend_xfade_skip();frontend_fadein_skip();st.waiting=0;}else if(st.waiting==2){if(need_sel)return;note("SRC confirm kind=%u sel=%u",vm_choice_kind(),selected);vm_choose(selected);if(st.waiting!=2)choice_open=false;}else if(!hide_msg)vm_advance(); /* story must not advance while the text box is hidden */}
 /* Share the rendering geometry with pointer input; outside taps are not confirms. */
 static int choice_at(int x,int y) {
  if(!choice_open||st.waiting!=2)return -1;
@@ -673,14 +745,15 @@ int main(int argc,char **argv) {
  if(mkdir(save_dir,0755)&&errno!=EEXIST){fprintf(stderr,"Cannot create save directory %s\n",save_dir);return 1;}
  char fontbuf[1200];if(!fontpath){snprintf(fontbuf,sizeof(fontbuf),"%s/Kosugi-Regular.ttf",data_dir);fontpath=fontbuf;}
  #ifdef __SWITCH__
-  /* Diagnostics no longer go to an SD log file (user request 2026-09-08: do not
-   * generate any .log). stderr stays unattached on Switch. To re-enable the
-   * kawaxp.log dump, restore this block:
-   *   {char lp[1200];snprintf(lp,sizeof(lp),"%s/kawaxp.log",save_dir);
-   *    FILE*lf=fopen(lp,"w");if(lf){dup2(fileno(lf),2);setvbuf(stderr,NULL,_IOLBF,0);}
-   *    fprintf(stderr,"KAWAXP log start %s\n",lp);
-   *    fprintf(stderr,"DBG noax=%d notext=%d noaudio=%d audiosync=%d\n",dbg_noax,dbg_notext,dbg_noaudio,dbg_audiosync);}
-   */
+  /* No .log by default (user request). Temporary diagnostic: only when the file
+   * sdmc:/switch/KAWAXP/kawaxp-debug.flag exists, stderr goes to kawaxp.log. */
+  {char fp[1200];snprintf(fp,sizeof(fp),"%s/kawaxp-debug.flag",data_dir);
+   FILE*fk=fopen(fp,"rb");
+   if(fk){fclose(fk);
+    char lp[1200];snprintf(lp,sizeof(lp),"%s/kawaxp.log",save_dir);
+    FILE*lf=fopen(lp,"w");if(lf){dup2(fileno(lf),2);setvbuf(stderr,NULL,_IOLBF,0);}
+    fprintf(stderr,"KAWAXP debug log start %s\n",lp);}
+  }
  #endif
 if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER)||kawa_text_init()){fprintf(stderr,"SDL: %s\n",SDL_GetError());return 1;}
 #ifdef __SWITCH__
@@ -853,8 +926,9 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
   }else animation_update(smoke?AX_TICK_MS:anim_now-anim_last);
   anim_last=anim_now;
   {extern void frontend_xfade_poll(void);frontend_xfade_poll();}
+  {extern void frontend_fadein_poll(void);frontend_fadein_poll();}
   /* timed waits end as usual; a util35 wipe keeps waiting until its frames ran */
-  if(st.waiting==3&&!frontend_xfade_active()&&!hide_msg&&(smoke||(Sint32)(SDL_GetTicks()-st.sys[255])>=0))st.waiting=0;
+  if(st.waiting==3&&!frontend_xfade_active()&&!frontend_fadein_active()&&!hide_msg&&(smoke||(Sint32)(SDL_GetTicks()-st.sys[255])>=0))st.waiting=0;
   if((ff_hold||getenv("KAWA_FF"))&&!smoke&&!hide_msg) { /* fast-forward paused while text box is hidden */
    if(st.waiting==3){if(!getenv("KAWA_FFNOSKIP")){extern void frontend_xfade_skip(void);frontend_xfade_skip();}st.waiting=0;}
    else if(st.waiting==1)vm_advance();
@@ -879,7 +953,7 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
     if(ms&&vm_choice_kind()==2&&++msn>=strtoul(ms,0,10)){
      frontend_present();if(screenshot){SDL_SaveBMP(canvas,screenshot);screenshot=NULL;}
      break;}}
-   {unsigned kk=vm_choice_kind();unsigned want=0;bool matched=false;
+   {note("SRC autopick kind=%u",vm_choice_kind());unsigned kk=vm_choice_kind();unsigned want=0;bool matched=false;
  if(kk==2){for(unsigned bi=0;bi<nbrk;bi++){if(!brk_used[bi]){const char*a=st.ip.script,*b=brk[bi].script;
    size_t la=strcspn(a,"."),lb=strcspn(b,".");
    if(la==lb&&!strncasecmp(a,b,la)&&(!brk[bi].have_addr||brk[bi].addr==(unsigned long)vm_last_menu_addr())){brk_used[bi]=1;want=brk[bi].opt;matched=true;break;}}}

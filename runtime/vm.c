@@ -84,17 +84,23 @@ static bool is_replay_script(const char*s){
 static void jump(const char *name,uint32_t addr) {
  struct script *s=get_script(name);if(!s)return;
  if(is_replay_script(st.ip.script)&&!is_replay_script(s->name)){
-  if(audio_bgm_dirty){audio_stop_all();audio_bgm_dirty=0;} /* replay loaded its own BGM */
+  if(audio_bgm_dirty){audio_stop_all();audio_bgm_dirty=0;audio_bgm_restore();} /* replay loaded its own BGM: stop, then resume menu music */
   else audio_stop_voice_se(); /* keep title/menu music on ch0 */
+ }else if(!is_replay_script(st.ip.script)&&is_replay_script(s->name)){
+  audio_bgm_snapshot(); /* remember the menu/title track playing before the replay */
  }
  snprintf(st.ip.script,32,"%s",s->name);st.ip.addr=addr;
  }
 void vm_jump_at(const char *name,uint32_t addr){jump(name,addr);}
-static void push(struct loc to) { if(st.depth==NFRAME){fail("Call stack overflow");return;}st.frames[st.depth++]=st.ip;st.ip=to; }
+static void push(struct loc to) {
+ if(st.depth==NFRAME){fail("Call stack overflow");return;}
+ if(!is_replay_script(st.ip.script)&&is_replay_script(to.script))audio_bgm_snapshot();
+ st.frames[st.depth++]=st.ip;st.ip=to;
+ }
 static void ret(void) {
  if(st.depth){
   if(is_replay_script(st.ip.script)&&!is_replay_script(st.frames[st.depth-1].script)){
-   if(audio_bgm_dirty){audio_stop_all();audio_bgm_dirty=0;}
+   if(audio_bgm_dirty){audio_stop_all();audio_bgm_dirty=0;audio_bgm_restore();}
    else audio_stop_voice_se();
   }
   st.ip=st.frames[--st.depth];
@@ -223,12 +229,24 @@ static void util(mes_parameter_list p) {
  case 1:st.text[0]=0;break; // 0x4391d0: prepare message window
  case 2:if(!a)st.text[0]=0;break;
  case 3:if(a==1)frontend_present();break; // native show/hide window updates
- case 4:case 5:case 6:copy_rect(0,0,639,479,1,0,0,0,false);break;
+ case 4: { /* AI.exe util4 (0x43e788): show the staged page, fading in from black
+            * when the 4th argument is 1 (e.g. title_bg.gcc reveal) */
+   bool fi=vector_length(p)>4&&par(p,4)==1;
+   if(fi&&frontend_fadein_start()){st.waiting=3;st.sys[255]=SDL_GetTicks()+600;break;}
+   copy_rect(0,0,639,479,1,0,0,0,false);break; }
+  case 5:case 6:copy_rect(0,0,639,479,1,0,0,0,false);break;
  case 7:fail("Util 7 transition not yet implemented");break;
  case 8:copy_rect(par(p,1),par(p,2),par(p,1)+par(p,3)-1,par(p,2)+par(p,4)-1,1,par(p,1),par(p,2),0,true);break;
- case 24: // persistent animation/audio slot bookkeeping, 0x43d3e0
-  if(a==0||a==1||a==2||a==3||a==4||a==5||a==6||a==7) { /* frontend state keeps loaded assets; animation slots added separately */ }
-  else fail("Util24 mode %u",a);break;
+ case 24: { /* util24 anim_wait: mode 4 = show staged image (title_bg/CG),
+            * 4th arg 1 = fade it in from black (AI.exe 0x43d3e0 family). */
+   unsigned mode=par(p,1);
+   if(mode==4){
+    /* args: (id,4,page,"file",flag): flag at index 4 (index 3 is the string) */
+    bool fi=vector_length(p)>4&&par(p,4)==1;
+    if(fi&&frontend_fadein_start()){st.waiting=3;st.sys[255]=SDL_GetTicks()+600;break;}
+    copy_rect(0,0,639,479,1,0,0,0,false);
+   }
+   break; }
  case 34:frontend_quake(a);break;
  case 35: /* AI.exe util35 = masked scene transition (mask idx=arg0): reveal the new
            * frame staged on surface 1 over the current display (surface 0), phased per

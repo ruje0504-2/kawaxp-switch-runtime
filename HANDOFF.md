@@ -7,7 +7,33 @@
 
 ## 🎯 给 Codex 的当前任务清单（优先做）
 
-### 0. Codex save_ui 拉取 + 回想 BGM 保留修复（2026-09-08）
+### 0. 回想结束 BGM 恢复（同曲名问题修正）（2026-09-08 修订）
+- 上一版 restore 用 strcmp(saved,cur) 跳过同曲名 → 回想シーン1(EVENT01) 与主界面同用 yokan 时
+  离开回放全停后不重播 → 无声（其它回想用不同曲名正常）。
+- 修复：audio_bgm_restore() 无条件重播快照曲（全停已静音 ch0，必恢复）。
+- NRO MD5 `545a9ed1`，已同步 Codex。
+
+### 0.1. 回想结束主界面 BGM 恢复（2026-09-08 第一版）
+- 症状：回想/结局回放结束回主界面无声（回放 load 过 ch0→离开时全停，title 曲不自动重播）。
+- 修复：audio 记录 ch0 当前曲名(cur_bgm)；进入回放脚本(jump/push 自非回放)时 audio_bgm_snapshot()
+  记住主界面曲；离开回放(全停 dirty 分支)后 audio_bgm_restore() 重播该曲。
+- NRO MD5 `44b02300`，已同步 Codex。待实机：回想シーン/结局回放后回主界面 BGM 恢复。
+
+### 0.1. 标题/菜单渐显修正（util24 而非 util4；分阶段）（2026-09-08 修订）
+- 上版挂错 util：`anim_wait(4,0,file,1)` 实为 **util24** 且参数 (id,4,page,str,flag)，
+  渐显标志在 **par(p,4)**；上版 par(p,3) 撞字符串触发 fail 停机。
+- 现：util24 mode==4 且 flag==1 → frontend_fadein（标题 title_bg/CG 001b/002 等"黑→亮"12 步）；
+  放行等待 600ms 兜底；菜单打开再走 menu_fade（菜单前帧→菜单帧 12 步），**先标题后菜单分开渐显**。
+- 验证：UTILTRACE 显示 title_bg 渐显→UTIL 37；smoke 正常。NRO MD5 `fd661591`，已同步 Codex。
+
+### 0.1. 标题/菜单渐显（util4 + 引擎菜单 fade-in）（2026-09-08 第一版）
+- 逆向 AI.exe 0x43e788=util4：页面亮度 0→127→255 逐帧渐显（"黑到亮"），每帧 +[6df00]/2，输入可跳过。
+- 实现：frontend_fadein_start/poll/skip（12 步、按键跳过、smoke 即时）；vm util4 第 4 参==1 时渐显否则直拷。
+- 引擎菜单打开（37/38/41-46，kind2 除外）时 menu_fade：菜单前帧→菜单帧 12 步混合渐显。
+- 效果：启动先渐显标题(title_bg)，随后标题菜单渐显。NRO MD5 `47d7c456`，已同步 Codex。
+- 待实机：渐显速度/是否每处都合适；util5/6 未动（原 copy 语义）。
+
+### 0.1. Codex save_ui 拉取 + 回想 BGM 保留修复（2026-09-08）
 - 拉取 Codex 新源码：save_ui.c/h（存读档新 UI：10 槽/页×4 页+メモ/決定/キャンセル/閉じる，kind38/45/46 改走 save_ui）、
   frontend/vm 对应接线、scene_ui 引用、meson 加 save_ui.c。**读档界面是否修好待实机测**。
 - BGM 修复：回想シーン(EVENT)不 load ch0；离开回放不再无条件 audio_stop_all()——
