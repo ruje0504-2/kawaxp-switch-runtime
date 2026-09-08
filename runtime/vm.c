@@ -67,10 +67,30 @@ static struct script *get_script(const char *name) {
  if(!s->map){fail("Out of memory indexing %s",name);return NULL;}
  index_list(s,s->ast);nscripts++;note("LOAD %s",name);return s;
 }
-static void jump(const char *name,uint32_t addr) { struct script *s=get_script(name);if(!s)return;snprintf(st.ip.script,32,"%s",s->name);st.ip.addr=addr; }
+static bool is_over_script(const char *s){return s&&!strncasecmp(s,"OVER",4);}
+/* replay/view scripts that load their own voice/BGM: leaving them (back to a
+ * menu/title/other flow) must cut their audio immediately. */
+static bool is_replay_script(const char*s){
+ if(!s||!s[0])return false;
+ if(!strncasecmp(s,"ALLPIC",6))return true;
+ if(!strncasecmp(s,"EVENT",5)&&s[5]>='0'&&s[5]<='9')return true;
+ if(is_over_script(s))return true;
+ if(!strncasecmp(s,"CREDITS",7))return true;
+ return false;
+}
+static void jump(const char *name,uint32_t addr) {
+ struct script *s=get_script(name);if(!s)return;
+ if(is_replay_script(st.ip.script)&&!is_replay_script(s->name))audio_stop_all();
+ snprintf(st.ip.script,32,"%s",s->name);st.ip.addr=addr;
+ }
 void vm_jump_at(const char *name,uint32_t addr){jump(name,addr);}
 static void push(struct loc to) { if(st.depth==NFRAME){fail("Call stack overflow");return;}st.frames[st.depth++]=st.ip;st.ip=to; }
-static void ret(void) { if(st.depth)st.ip=st.frames[--st.depth];else st.waiting=98; }
+static void ret(void) {
+ if(st.depth){
+  if(is_replay_script(st.ip.script)&&!is_replay_script(st.frames[st.depth-1].script))audio_stop_all();
+  st.ip=st.frames[--st.depth];
+ }else st.waiting=98;
+ }
 /* Pre-register DEFINE.MES procedures so any script can be started standalone
  * (normal boot goes STARTUP->define.mes->start.mes and registers them while
  * executing). defproc body statements sit between next_address and skip_addr. */
@@ -387,7 +407,6 @@ unsigned vm_menu_value(unsigned i) { return i<100?menu_nums[i]:0; }
 /* true while the current scene is a replay/view instead of live gameplay:
  * CG album photos, scene replays, ending/credits playback. Save/load menus
  * must not be summoned there (user req 2026-09-08). */
-static bool is_over_script(const char *s){return s&&!strncasecmp(s,"OVER",4);}
 static bool in_replay_view(void){
  const char *s=st.ip.script;
  if(!s||!s[0])return false;

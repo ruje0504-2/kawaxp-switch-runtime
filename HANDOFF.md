@@ -2,7 +2,20 @@
 
 ## 🎯 给 Codex 的当前任务清单（优先做）
 
-### 0. 隐藏文字框：剧情暂停 + 不显示快进图标（2026-09-08 补充）
+### 0. 回放离开即停音（改：不碰主界面 BGM）（2026-09-08 修订）
+- 上一版在 util42/43/44 菜单打开时 audio_stop_all() → **误杀主界面/标题 BGM**（用户指正）。
+- 已撤销 builder 内停止；改为 vm.c jump()/ret() **离开回放脚本瞬间**停音
+  （is_replay_script = ALLPIC/EVENT0X/OVER/CREDITS；仅当跳/返回目标非回放族才停）。
+- 效果：回想/结局回放结束回菜单/标题即停其语音+BGM；标题/菜单自身 BGM 不受影响。
+- NRO MD5 `0f223c61`，已同步 Codex。待实机：回放结束回菜单无声残留、主界面 BGM 正常。
+
+### 0.1. 回放回菜单即停声音（2026-09-08 第一版，已修订见上）
+- audio.c 新增 audio_stop_all()（全 5 通道停播 + 取消 worker 待播 want_play/loading）；
+  util42(エンディング)/util43(シーン, scene_menu_open)/util44(相册, vm_album_menu) 打开菜单时调用。
+- 效果：回想(EVENT)/结局(OVER)播放结束或中断回到鉴赏菜单瞬间，语音/BGM/SE 立即停止。
+- NRO MD5 `a335c836`，已同步 Codex。
+
+### 0.1. 隐藏文字框：剧情暂停 + 不显示快进图标（2026-09-08 补充）
 - 上条基础上：hide_msg 期间 ff_hold 的 ">>" 快进角标也不绘制（除非恢复显示）。
   NRO MD5 `726deed1`，已同步 Codex。
 

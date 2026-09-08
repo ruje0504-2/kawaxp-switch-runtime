@@ -226,6 +226,17 @@ void audio_init(void) {
 #endif
 }
 void audio_stop(int ch){if(ch<0||ch>=5||!device)return;SDL_LockAudioDevice(device);channels[ch].playing=false;SDL_UnlockAudioDevice(device);}
+/* stop every channel now (voice/BGM/SE) and cancel any decode still queued for
+ * playback, so replay scenes leave no audio behind when returning to a menu. */
+void audio_stop_all(void){
+ if(!device)return;
+ for(int ch=0;ch<5;ch++){
+  SDL_LockAudioDevice(device);channels[ch].playing=false;SDL_UnlockAudioDevice(device);
+#ifdef __SWITCH__
+  mutexLock(&adec_mu);want_play[ch]=false;adec_loading[ch]=false;mutexUnlock(&adec_mu);
+#endif
+ }
+}
 #ifdef __SWITCH__
 void audio_load(int ch,const char *name) {
  if(ch<0||ch>=5)return;

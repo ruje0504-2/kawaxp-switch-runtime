@@ -60,6 +60,7 @@ void set_choices(const char **items,unsigned count,int kind);
 void audio_load(int ch,const char *name);
 void audio_play(int ch,bool loop);
 void audio_stop(int ch);
+void audio_stop_all(void); /* silence all channels, cancel pending decodes */
 void audio_init(void);
 void audio_fini(void);
 int save_state(unsigned slot);
