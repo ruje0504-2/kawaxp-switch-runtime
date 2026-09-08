@@ -221,7 +221,7 @@ static void animation_draw(const uint32_t d[7],void *context) {
 }
 void animation_update(unsigned elapsed_ms) {
  if(st.waiting==99)return;
- /* Bound catch-up after OS suspension; never spin through a long backlog. */
+ /* Bound catch-up after OS suspension; never spin through a long frame backlog. */
  if(elapsed_ms>200)elapsed_ms=200;
  animation.phase_ms+=elapsed_ms;
  while(animation.phase_ms>=AX_TICK_MS) {
@@ -426,7 +426,7 @@ void frontend_present(void) {
   text_at(error_text,14,44,0xffffff,610);
  }
  if(status_until>SDL_GetTicks()){SDL_Rect r={0,0,640,34};SDL_FillRect(canvas,&r,rgb(canvas,0x12212d));text_at(status,12,4,0xffffff,610);}
- if(ff_hold&&!smoke&&(st.waiting==1||st.waiting==3)){SDL_Rect r={572,4,64,20};SDL_FillRect(canvas,&r,rgb(canvas,0x10241c));text_at(">>",578,5,0x7dffa0,50);}
+ if(ff_hold&&!smoke&&!hide_msg&&(st.waiting==1||st.waiting==3)){SDL_Rect r={572,4,64,20};SDL_FillRect(canvas,&r,rgb(canvas,0x10241c));text_at(">>",578,5,0x7dffa0,50);}
 SDL_UpdateTexture(texture,NULL,canvas->pixels,canvas->pitch);
  SDL_RenderClear(renderer);SDL_RenderCopy(renderer,texture,NULL,NULL);SDL_RenderPresent(renderer);
 }
@@ -593,7 +593,7 @@ static void album_back(void){
  }
  hide_msg=!hide_msg;gfx_dirty=true;
 }
-static void confirm(void) {if(st.waiting==3){extern void frontend_xfade_skip(void);frontend_xfade_skip();st.waiting=0;}else if(st.waiting==2){vm_choose(selected);if(st.waiting!=2)choice_open=false;}else vm_advance();}
+static void confirm(void) {if(st.waiting==3){extern void frontend_xfade_skip(void);frontend_xfade_skip();st.waiting=0;}else if(st.waiting==2){vm_choose(selected);if(st.waiting!=2)choice_open=false;}else if(!hide_msg)vm_advance(); /* story must not advance while the text box is hidden */}
 /* Share the rendering geometry with pointer input; outside taps are not confirms. */
 static int choice_at(int x,int y) {
  if(!choice_open||st.waiting!=2)return -1;
@@ -828,8 +828,8 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
   Uint32 anim_now=SDL_GetTicks();animation_update(smoke?AX_TICK_MS:anim_now-anim_last);anim_last=anim_now;
   {extern void frontend_xfade_poll(void);frontend_xfade_poll();}
   /* timed waits end as usual; a util35 wipe keeps waiting until its frames ran */
-  if(st.waiting==3&&!frontend_xfade_active()&&(smoke||(Sint32)(SDL_GetTicks()-st.sys[255])>=0))st.waiting=0;
-  if((ff_hold||getenv("KAWA_FF"))&&!smoke) { /* fast-forward: skip timed waits, auto-advance dialogue; stop at choices/menus */
+  if(st.waiting==3&&!frontend_xfade_active()&&!hide_msg&&(smoke||(Sint32)(SDL_GetTicks()-st.sys[255])>=0))st.waiting=0;
+  if((ff_hold||getenv("KAWA_FF"))&&!smoke&&!hide_msg) { /* fast-forward paused while text box is hidden */
    if(st.waiting==3){if(!getenv("KAWA_FFNOSKIP")){extern void frontend_xfade_skip(void);frontend_xfade_skip();}st.waiting=0;}
    else if(st.waiting==1)vm_advance();
   }

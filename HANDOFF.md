@@ -2,7 +2,15 @@
 
 ## 🎯 给 Codex 的当前任务清单（优先做）
 
-### 0. util35 残留修复：mask==255 像素末步 reveal（2026-09-08 第三轮）
+### 0. 隐藏文字框：剧情暂停 + 不显示快进图标（2026-09-08 补充）
+- 上条基础上：hide_msg 期间 ff_hold 的 ">>" 快进角标也不绘制（除非恢复显示）。
+  NRO MD5 `726deed1`，已同步 Codex。
+
+### 0.1. 隐藏文字框时剧情暂停推进（2026-09-08）
+- B(hide_msg) 隐藏文字框期间：A 确认/快进(Y/X)/自动节拍(waiting==3 到时)一律不推进剧情，
+  需再按 B 恢复显示后才继续。frontend.c confirm/ff/等待 gate 三处。NRO 见下。
+
+### 0.1. util35 残留修复：mask==255 像素末步 reveal（2026-09-08 第三轮）
 - 现象：转场平滑后仍有一列/簇菱形残留。
 - 根因：reveal 条件 `mrow[x]<th`，末步 th=255 时 **==255 的像素永不 reveal**（06.msk 有 930px==255）。
 - 修复：改 `<=`，末步全 reveal。NRO MD5 `85f54041`，已同步 Codex。
@@ -66,16 +74,6 @@
 - kind45/46/38 取消=~0u(戻る项)→waiting 回 1；41→タイトルに戻る(15)；42/43/44→戻る/タイトル(0)。
 - 验证：编译干净，smoke+roundtrip PASS，场景选段正常。NRO MD5 `67378d51`，已同步 Codex。
 - 待实机：41 两列/44 四列/42 卡片/43 名牌的左右上下手感、B 返回各界面。
-
-### 0.1. backlog 文字履历模块已删除（2026-09-08，逆向确认原版无此功能）
-- 逆向证据：AI.exe 全文件无 履歴/ヒストリー/バックログ/メッセージログ/ログ 字符串（UTF-8/SJIS/UTF-16 全试）；
-  mes-dump 全部 90+ 脚本 "履歴" 0 出现（メッセージ 仅一处剧情对白文本）→ **原版 PC 无文字履历**。
-- 删除内容（frontend.c/vm.c/kawa.h）：history 环形数组+HIST_MAX/LEN、hist_add/line/enter/leave/avail、
-  frontend_hist_note、full-screen 履歴绘制块、按键/手柄/触屏的履历开关与滚动分支
-  （十字键上/下、h/y、B/戻る、手柄 UP/DOWN/BACK/Y/-）、KAWA_HISTTEST 钩子、vm 0x22 commit 挂钩。
-- 还原：UP/DOWN 仅菜单导航；B/hide_msg 保留原语义；ff 快进条件去掉 !hist_mode。
-- NRO MD5 `dba08cca`；双端编译干净、smoke+存档往返 PASS；已同步 Codex。
-- 注意：blit_keyed() 仍未用（分支选项 selparts 遗留），本轮未动。
 
 ### 0.1. 调试 flag 开关全部移除（2026-09-08 用户要求，含上条 log 关闭）
 - frontend.c/audio.c/kawa.h：删除 noax/notext/noaudio/audiosync 的 flag 文件机制与 DBG 打印；
@@ -168,7 +166,7 @@
 
 ### 3. Switch 实机回归 — 用户确认已完成
 用户在本轮明确回复“3已经完成”：257eedf / NRO MD5 6a32fcb1 基线的 AX 眼睛动画、
-backlog、触屏、分支选项实机回归记为完成。这项确认不自动覆盖之后新增的标题 UI / 命中区改动。
+触屏、分支选项实机回归记为完成。这项确认不自动覆盖之后新增的标题 UI / 命中区改动。
 
 ### 4. PC 存档兼容 — 已封存待样本（TASKS-PC-SAVE-COMPAT.md）
 骨架逆向已留档（SaveData = 30×0x40E 记录等），需真实游玩存档才能继续；当前暂停。
@@ -207,21 +205,14 @@ backlog、触屏、分支选项实机回归记为完成。这项确认不自动�
   标题条/页眉——仍属 TASKS-TITLE-UI-CODEX 像素对照范围。截图 work/menu-selparts.bmp。
 - NRO：outputs/KAWAXP-port/kawaxp.nro（MD5 417ae164…），switch-package 与 Codex 镜像已同步。
 
-**2026-09-08 第五轮：文字履历(backlog) + Switch 触屏 + crossfade 核查**
-- **文字履历**：记录每条已显示对白（环形 256 条），全屏回看视图。**打开/关闭 = 十字键上
-  短按**（对白暂停时按上打开；历史内上键翻向旧行、翻到最旧再按上关闭；下键翻回新行）。
-  键盘 h/y 开关、上下滚动、B/回车关闭；手柄 − 键(Select)开关；触摸点按关闭。回看期间
-  禁用快进。标题栏"文字履歴"。
-- **Switch 触屏**：SDL_FINGERDOWN 归一化坐标→640×480；普通对话点按=推进，选择菜单
-  点按选项=选中+确认，历史中点按=关闭。
+**2026-09-08 第五轮：Switch 触屏 + crossfade 核查**
+- **Switch 触屏**：SDL_FINGERDOWN 归一化坐标→640×480；普通对话点按=推进，选择菜单点按选项=选中+确认。
 - **crossfade 核查结论**：0x2b/0x2c 语句（CROSSFADE/CROSSFADE2）在全部 90 脚本 **0 出现**
   （全脚本扫描 65801 语句），unsupported 分支不可达（实测多路线 unsupported=0）。
   mes-dump 里的 "pixel_palette_crossfade" 实为 **util 8**（区域像素渐变，参数 x,y,w,h），
   已有近似实现(case8 masked copy)，s10/s12 实测触发但无错；视觉精确性列入 quake/util35
   同族 Codex 像素核验范围（TASK-QUAKE 单内补充说明）。
-- 测试钩子：KAWA_HISTTEST=<msg>（smoke 到该条时截历史屏并退出，验证渲染）。
 - NRO：outputs/KAWAXP-port/kawaxp.nro（MD5 38d261be…），switch-package 与 Codex 镜像已同步。
-- **待实机确认**：手柄十字键上开/关履历手感、触摸命中区。
 
 **2026-09-08 备案：PC 存档兼容 → 已封存，待真实存档样本再续**
 - 详见 **TASKS-PC-SAVE-COMPAT.md**（两个工作区均有）。方向=PC 原版存档→Switch 续玩。
