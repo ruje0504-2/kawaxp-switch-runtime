@@ -104,7 +104,7 @@ text('menu',(0,296,380,372),'河原崎家的一族',58,solid=(255,255,255,255),l
 # Album page backgrounds and atlas.
 nav('cg_pt')
 for n in ['cg_bg1','cg_bg2']:
- for x,w,s in [(64,80,'上一页'),(228,80,'下一页'),(328,100,'连续播放'),(452,124,'返回标题')]:cell(n,x,432,w,24,s)
+ for x,w,s in [(64,80,'上一页'),(228,80,'下一页'),(328,100,'连续播放'),(452,124,'返回标题')]:cell(n,x,432,w,24,s,3 if (n=='cg_bg1' and x==64) or (n=='cg_bg2' and x==228) else 0)
  # Locked cards contain the game title; use identical treatment for all placeholders.
  for row in range(4):
   for col in range(4):
@@ -139,10 +139,32 @@ for n,prompt in [('endk','确定退出游戏吗？'),('bktitlen','确定返回�
  for state in range(3):
   for x,s in [(0,'确定'),(104,'取消')]:cell(n,x,108+24*state,104,24,s,state)
 # Music titles and controls: 7 rows, 2 columns, 4 visual states.
+# The title artwork is baked into the music panels at approximately 30% brightness.
+# Match source background pixels before editing foreground glyphs, retaining ornaments.
+old_title=bg.copy();old_title.paste(Image.open(SRC/'title_pt.png').convert('RGBA').crop((0,768,584,888)),(28,108))
+new_title=bg.copy();new_title.paste(load('title_pt').crop((0,768,584,888)),(28,108))
+def music_backdrop(n,box,source_box,interior=False):
+ im=load(n);a=np.array(im.crop(box));old=np.array(old_title.crop(source_box));new=np.array(new_title.crop(source_box))
+ expected=old[:,:,:3].astype(float)*.3
+ same=np.max(np.abs(a[:,:,:3].astype(float)-expected),axis=2)<=2
+ changed=np.ones(same.shape,bool) if interior else np.any(old[:,:,:3]!=new[:,:,:3],axis=2)&same
+ replacement=np.rint(new[:,:,:3].astype(float)*.3).astype('uint8')
+ a[:,:,:3][changed]=replacement[changed]
+ im.paste(Image.fromarray(a),box[:2]);mark(n,box,'背景标题：河原崎家的一族')
+music_backdrop('soundk_bg',(28,108,612,228),(28,108,612,228))
+for i in range(14):
+ sx=64+268*(i%2);sy=36+52*(i//2)
+ music_backdrop('soundk_bg',(sx+8,sy+5,sx+236,sy+35),(sx+8,sy+5,sx+236,sy+35),True)
+ for state in range(4):
+  sx=64+268*(i%2);sy=36+52*(i//2);tx=244*(i%2);ty=160*(i//2)+40*state
+  music_backdrop('soundk_pt',(tx+8,ty+5,tx+236,ty+35),(sx+8,sy+5,sx+236,sy+35),True)
 tracks=['命运一族','侯爵千金','走下舞台的少女','通往毁灭的阶梯','觉醒','虚假的贵妇人','无尽的华尔兹','杀戮月夜','午后的露台','树荫','终焉','永恒的黑暗','噩梦','被撕裂的时光']
 for i,s in enumerate(tracks):
- cell('soundk_bg',64+268*(i%2),36+52*(i//2),244,40,s,0,22,pad=10)
- for state in range(4):cell('soundk_pt',244*(i%2),160*(i//2)+40*state,244,40,s,state,22,pad=10)
+ x=64+268*(i%2);y=36+52*(i//2)
+ text('soundk_bg',(x+10,y+5,x+234,y+35),s,22,clean=False)
+ for state in range(4):
+  x=244*(i%2);y=160*(i//2)+40*state
+  text('soundk_pt',(x+10,y+5,x+234,y+35),s,22,state,clean=False)
 for x,s in [(62,'停止'),(450,'返回标题')]:cell('soundk_bg',x,418,128,28,s)
 for state in range(4):
  cell('soundk_pt',128*state,1120,128,28,'停止',state)
@@ -188,12 +210,12 @@ def credit_color(m):
 for i,(role,name) in enumerate(credits):
  n=f'end_staff{i:02}';im=load(n);base=credit_glyph(role,name)
  for j in range(6):
-  # Text rises from blurred to clear, the original six 376x92 cells.
+  # Six 188x92 cells, followed by a 24px key-color spacer through y=575.
   m=base.crop((94,54,282,146)).filter(ImageFilter.GaussianBlur([6,4,3,2,1,0][j]))
   m=m.point(lambda a,f=[.25,.4,.55,.7,.85,1][j]:int(a*f))
   im.paste(credit_color(m),(0,j*92));mark(n,(0,j*92,188,(j+1)*92),role+' '+name)
  for j in range(9):
-  h=200 if j<3 else 192;cx,cy=188,h/2
+  h=192;cx,cy=188,h/2
   a=np.array(base.resize((376,h)));yy,xx=np.indices((h,376),dtype=np.float32);dx=xx-cx;dy=yy-cy
   radius=np.sqrt(dx*dx+dy*dy);theta=np.arctan2(dy,dx)
   strength=(j+1)*1.2;angle=theta-strength*np.exp(-radius/90)
@@ -201,13 +223,15 @@ for i,(role,name) in enumerate(credits):
   warped=cv2.remap(a,mx,my,cv2.INTER_CUBIC,borderMode=cv2.BORDER_CONSTANT)
   warped=(warped.astype(float)*max(.1,1-j*.1)).astype('uint8')
   tile=credit_color(Image.fromarray(warped))
-  x,y=(0,552+j*200) if j<3 else (376,(j-3)*192)
+  x,y=(0,576+j*192) if j<3 else (376,(j-3)*192)
   im.paste(tile,(x,y));mark(n,(x,y,x+376,y+h),role+' '+name+' [swirl frame]')
 # Save immutable originals alongside reproducible outputs + per-pixel edit audit.
 report={}
 for n,im in IM.items():
- im.save(DST/(n+'.png'))
  original=np.array(Image.open(SRC/(n+'.png')).convert('RGBA'));out=np.array(im)
+ keys=(original[:,:,:3]==[0,255,0]).all(2)|(original[:,:,:3]==[0,0,255]).all(2)
+ out[keys]=original[keys]
+ im=Image.fromarray(out);im.save(DST/(n+'.png'))
  changed=np.any(original!=out,axis=2);allowed=np.array(MASKS[n])>0
  assert not np.any(changed & ~allowed),n+' edited outside manifest rectangles'
  report[n]={'size':list(im.size),'operations':len(OPS[n]),'changed_pixels':int(changed.sum()),'outside_rect_changes':0,'status':'rendered'}
