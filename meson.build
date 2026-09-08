@@ -18,11 +18,14 @@ if get_option('runtime')
     runtime_src = ['runtime/vm.c','runtime/frontend.c','runtime/audio.c','runtime/text_ttf.c']
     runtime_deps = deps + [dependency('sdl2'), dependency('SDL2_ttf'), dependency('sndfile'), dependency('zlib')]
   endif
-  runtime_src += ['runtime/ax.c','runtime/ax_render.c','runtime/title_ui.c','runtime/extras_ui.c']
+  runtime_src += ['runtime/ax.c','runtime/ax_render.c','runtime/title_ui.c','runtime/extras_ui.c','runtime/scene_ui.c','runtime/save_ui.c']
   executable('kawaxp', runtime_src, dependencies: runtime_deps, c_args: ['-D_DEFAULT_SOURCE'])
   if host_machine.system() != 'horizon'
     ax_test = executable('ax-test', ['tests/ax_test.c','runtime/ax.c','runtime/ax_render.c'],
                          dependencies: deps + [dependency('sdl2')], c_args: ['-D_DEFAULT_SOURCE'])
     test('AX playback and pixels', ax_test)
+    scene_test = executable('scene-ui-test', ['tests/scene_ui_test.c','runtime/scene_ui.c','runtime/ax.c','runtime/ax_render.c'],
+                            dependencies: deps + [dependency('sdl2')], c_args: ['-D_DEFAULT_SOURCE'])
+    test('Scene UI input bounds', scene_test)
   endif
 endif

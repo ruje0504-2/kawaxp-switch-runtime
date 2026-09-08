@@ -1,8 +1,31 @@
 # KAWAXP 交接：AX 已接入（2026-09-08 更新）
 
+> **本轮最新：kind43 Scene 已接入原版胶片 UI，并修复 L/R 翻页不重绘。**
+> 独立实现 `runtime/scene_ui.c/h`；`extras_ui.c` 按用户要求保持不动，kind44 未改。
+> 8 页原图像素比对、40 项悬停 AX、SDL 肩键往返测试通过；Switch 编译通过，待实机确认。
+> NRO MD5 `a56a453aaa3eacb4f04f1b9b5cbaa2d8`。详见 `reports/scene-ui-20260908.md`。
+
 ## 🎯 给 Codex 的当前任务清单（优先做）
 
-### 0. 回放离开即停音（改：不碰主界面 BGM）（2026-09-08 修订）
+### 0. Codex save_ui 拉取 + 回想 BGM 保留修复（2026-09-08）
+- 拉取 Codex 新源码：save_ui.c/h（存读档新 UI：10 槽/页×4 页+メモ/決定/キャンセル/閉じる，kind38/45/46 改走 save_ui）、
+  frontend/vm 对应接线、scene_ui 引用、meson 加 save_ui.c。**读档界面是否修好待实机测**。
+- BGM 修复：回想シーン(EVENT)不 load ch0；离开回放不再无条件 audio_stop_all()——
+  仅当回放期间 load 过 ch0(audio_bgm_dirty)才全停，否则 audio_stop_voice_se()（停 1..4 保 ch0 主界面曲）。
+- NRO MD5 `c9a2ec68`，已同步 Codex。
+
+### 0.1. 剧情选项显式选中（补丁：方向键接线漏写）（2026-09-08 修订）
+- 上一版替换方向键→menu_move 的补丁因同脚本 assert 失败整体未写入 → 十字键未解除 need_sel，
+  绘制全白且只能触摸。已补上键盘 4 向 + DPAD 4 向走 menu_move。
+- NRO MD5 `727995c2`，已同步 Codex。待实机：分支首按方向出光标、A 确认、触摸即选。
+
+### 0.1. 剧情选项需显式选中才可确认（2026-09-08）
+- kind2 分支菜单打开时无默认选中（need_sel 武装态，绘制全白无金色）；A 在未武装时忽略（防误按跳过首项）；
+  首次方向键（上=末项/下=首项/左右=首项）或触摸点选后解除武装，A 才确认。引擎菜单(41-44/37/45/46)不受影响。
+- frontend.c：need_sel/menu_move、set_choices 按 kind2 武装、confirm/pointer/方向键接线、kind2 渲染门控。
+- NRO MD5 `467c0f14`，已同步 Codex。待实机：首按方向落点（上=末/下=首）手感。
+
+### 0.1. 回放离开即停音（改：不碰主界面 BGM）（2026-09-08 修订）
 - 上一版在 util42/43/44 菜单打开时 audio_stop_all() → **误杀主界面/标题 BGM**（用户指正）。
 - 已撤销 builder 内停止；改为 vm.c jump()/ret() **离开回放脚本瞬间**停音
   （is_replay_script = ALLPIC/EVENT0X/OVER/CREDITS；仅当跳/返回目标非回放族才停）。

@@ -1,6 +1,9 @@
 /* GPL-2.0-or-later. KAWAXP AST interpreter; original program addresses in RE.md. */
 #include "kawa.h"
 #include "extras_ui.h"
+#include "scene_ui.h"
+#include "save_ui.h"
+static void storage_menu(unsigned kind);
 #include <stdarg.h>
 #include <string.h>
 #include <strings.h>
@@ -80,14 +83,20 @@ static bool is_replay_script(const char*s){
 }
 static void jump(const char *name,uint32_t addr) {
  struct script *s=get_script(name);if(!s)return;
- if(is_replay_script(st.ip.script)&&!is_replay_script(s->name))audio_stop_all();
+ if(is_replay_script(st.ip.script)&&!is_replay_script(s->name)){
+  if(audio_bgm_dirty){audio_stop_all();audio_bgm_dirty=0;} /* replay loaded its own BGM */
+  else audio_stop_voice_se(); /* keep title/menu music on ch0 */
+ }
  snprintf(st.ip.script,32,"%s",s->name);st.ip.addr=addr;
  }
 void vm_jump_at(const char *name,uint32_t addr){jump(name,addr);}
 static void push(struct loc to) { if(st.depth==NFRAME){fail("Call stack overflow");return;}st.frames[st.depth++]=st.ip;st.ip=to; }
 static void ret(void) {
  if(st.depth){
-  if(is_replay_script(st.ip.script)&&!is_replay_script(st.frames[st.depth-1].script))audio_stop_all();
+  if(is_replay_script(st.ip.script)&&!is_replay_script(st.frames[st.depth-1].script)){
+   if(audio_bgm_dirty){audio_stop_all();audio_bgm_dirty=0;}
+   else audio_stop_voice_se();
+  }
   st.ip=st.frames[--st.depth];
  }else st.waiting=98;
  }
@@ -245,14 +254,7 @@ static void util(mes_parameter_list p) {
   unsigned c=0;const char *items[6];
   for(unsigned k=0;k<6;k++)if(enabled[k]){items[c]=titles[k];menu_nums[c++]=tno[k];}
   menu_nums[c]=0;choice_kind=37;set_choices(items,c,2);st.waiting=2;break; }
- case 38: { // engine load screen (0x43eb78): list runtime slots that exist, then resume
-  static char lbls[48][24];unsigned c=0;const char *items[48];
-  for(unsigned s=0;s<100&&c<47;s++){char p[1200];
-   snprintf(p,sizeof(p),"%s/slot%u.kws",save_dir,s);
-   FILE *f=fopen(p,"rb");if(!f)continue;fclose(f);
-   snprintf(lbls[c],24,"スロット%02u",s);items[c]=lbls[c];menu_nums[c]=s;c++;}
-  items[c]="戻る";menu_nums[c]=~0u;c++;
-  menu_nums[c]=0;choice_kind=38;set_choices(items,c,2);st.waiting=2;break; }
+ case 38:slot_page=0;slot_pending=-1;save_ui_scan();storage_menu(38);break;
  case 40:st.var[9]=0;st.waiting=1;break; // hold splash until advance (OVER3/16/18/SAMPLE)
  case 41: {
   const char *items[16];music_playing=-1;
@@ -321,16 +323,36 @@ static void menu_exec(struct mes_statement *q) {
 /* Engine scene-replay menu: one event page shows its 5 parts (EVENTxx.MES jumps
  * on var32[18]=1..5); prev/next switch event pages 0..7 (flag 401+page*5+part). */
 static void scene_menu_open(void){
+ scene_ui_close(); /* replay may change unlock flags even when the page is unchanged */
  static char lbl[8][24];unsigned c=0;const char *items[8];
  for(unsigned k=1;k<=5;k++){snprintf(lbl[c],24,"パート%u",k);items[c]=lbl[c];menu_nums[c]=k;c++;}
  items[c]="前のイベント";menu_nums[c]=EXTRA_PREV;c++;
  items[c]="次のイベント";menu_nums[c]=EXTRA_NEXT;c++;
  items[c]="戻る";menu_nums[c]=0;c++;
  choice_kind=43;set_choices(items,c,2);st.waiting=2;
+ frontend_refresh(); /* page changes otherwise keep the same wait/selection and never redraw */
  note("SCENE page %u",scene_page);
 }
 void vm_choose(unsigned i) {
  if(st.waiting!=2)return;
+ if(save_ui_kind(choice_kind)){
+  unsigned kind=choice_kind,v=i<100?menu_nums[i]:~0u;
+  if(!save_ui_enabled(kind,v))return;
+  if(v>=SLOT_PAGE&&v<SLOT_PAGE+4){slot_page=v-SLOT_PAGE;storage_menu(kind);return;}
+  if(v==~0u){slot_pending=-1;st.waiting=kind==38?0:1;return;}
+  if(v==SLOT_MEMO){save_ui_edit();return;}
+  if(v==SLOT_NO){slot_pending=-1;storage_menu(kind);return;}
+  if(v==SLOT_YES){
+   if(slot_pending<0||slot_pending>=40)return;
+   unsigned slot=(unsigned)slot_pending;slot_pending=-1;
+   st.waiting=1;
+   bool ok=kind==45?save_state(slot):load_state(slot);
+   if(ok){if(kind==45)save_ui_write_memo(slot);return;}
+   save_ui_scan();storage_menu(kind);return;
+  }
+  if(v<40){save_ui_prepare(v);storage_menu(kind);return;}
+  return;
+ }
  if(choice_kind==37) { // title menu: report the item number START.MES expects
   if(i<8&&menu_nums[i]){st.var[18]=menu_nums[i];st.text[0]=0;st.waiting=0;}
   return;
@@ -423,16 +445,19 @@ void vm_slot_menu(bool save) {
  /* only during actual gameplay dialogue; never inside replay views
   * (CG/scene/ending/credits) — not even when they sit at a dialogue pause */
  if(in_replay_view())return;
- /* engine save/load slot list (0..39), mirrors original 40-slot SaveData menu */
- static char lbls[41][24]; unsigned c=0; const char *items[41];
- for (unsigned s=0;s<40;s++) {
-  char p[1200]; snprintf(p,sizeof(p),"%s/slot%u.kws",save_dir,s);
-  bool exists=false; FILE*f=fopen(p,"rb"); if(f){exists=true;fclose(f);}
-  snprintf(lbls[c],24,"スロット%02u%s",s,exists?"":" (空)");
-  items[c]=lbls[c]; menu_nums[c]=s; c++;
+ slot_page=0;slot_pending=-1;save_ui_scan();storage_menu(save?45:46);
+}
+static void storage_menu(unsigned kind){
+ static char labels[15][24];const char *items[15];unsigned c=0;
+ if(slot_pending>=0){
+  if(kind==45){items[c]="メモ編集";menu_nums[c++]=SLOT_MEMO;}
+  items[c]="決定";menu_nums[c++]=SLOT_YES;items[c]="キャンセル";menu_nums[c++]=SLOT_NO;
+ }else{
+  for(unsigned i=0;i<10;i++){unsigned s=slot_page*10+i;snprintf(labels[c],24,"スロット%02u",s+1);items[c]=labels[c];menu_nums[c++]=s;}
+  for(unsigned p=0;p<4;p++){snprintf(labels[c],24,"%u頁",p+1);items[c]=labels[c];menu_nums[c++]=SLOT_PAGE+p;}
+  items[c]="閉じる";menu_nums[c++]=~0u;
  }
- items[c]="戻る"; menu_nums[c]=~0u; c++;
- menu_nums[c]=0; choice_kind=save?45:46; set_choices(items,c,2); st.waiting=2;
+ choice_kind=kind;set_choices(items,c,2);st.waiting=2;frontend_refresh();
 }
 void vm_advance(void) {if(st.waiting==1){st.waiting=0;st.text[0]=0;} }
 void vm_step(void) {

@@ -228,6 +228,7 @@ void audio_init(void) {
 void audio_stop(int ch){if(ch<0||ch>=5||!device)return;SDL_LockAudioDevice(device);channels[ch].playing=false;SDL_UnlockAudioDevice(device);}
 /* stop every channel now (voice/BGM/SE) and cancel any decode still queued for
  * playback, so replay scenes leave no audio behind when returning to a menu. */
+int audio_bgm_dirty; /* set when a ch0 (BGM) load happened since the last replay */
 void audio_stop_all(void){
  if(!device)return;
  for(int ch=0;ch<5;ch++){
@@ -237,10 +238,21 @@ void audio_stop_all(void){
 #endif
  }
 }
+/* stop voice/SE but keep ch0: scene replays never load their own BGM, so ch0
+ * still holds the title/menu music and must survive leaving a replay. */
+void audio_stop_voice_se(void){
+ if(!device)return;
+ for(int ch=1;ch<5;ch++){
+  SDL_LockAudioDevice(device);channels[ch].playing=false;SDL_UnlockAudioDevice(device);
+#ifdef __SWITCH__
+  mutexLock(&adec_mu);want_play[ch]=false;adec_loading[ch]=false;mutexUnlock(&adec_mu);
+#endif
+ }
+}
 #ifdef __SWITCH__
 void audio_load(int ch,const char *name) {
  if(ch<0||ch>=5)return;
- note("AUDIO LOAD ch=%d %s",ch,name);if((smoke&&!audio_forced())||!device)return;
+ note("AUDIO LOAD ch=%d %s",ch,name);if(ch==0)audio_bgm_dirty=1;if((smoke&&!audio_forced())||!device)return;
  if(!adec_run||getenv("KAWA_AUDIOSYNC")) {
   /* synchronous fallback: worker unavailable or KAWA_AUDIOSYNC=1 */
   audio_stop(ch);struct archive_data *d=NULL;
@@ -287,7 +299,7 @@ void audio_play(int ch,bool loop){
 #else
 void audio_load(int ch,const char *name) {
  if(ch<0||ch>=5)return;
- note("AUDIO LOAD ch=%d %s",ch,name);if((smoke&&!audio_forced())||!device)return;
+ note("AUDIO LOAD ch=%d %s",ch,name);if(ch==0)audio_bgm_dirty=1;if((smoke&&!audio_forced())||!device)return;
  audio_stop(ch);struct archive_data *d=NULL;
  if(ch==0||ch==4){if(arcs[ch])d=archive_get(arcs[ch],name);}
  else for(int i=1;i<4&&!d;i++)if(arcs[i]&&archive_get_index(arcs[i],name)>=0)d=archive_get(arcs[i],name);

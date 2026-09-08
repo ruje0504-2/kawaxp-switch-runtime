@@ -6,6 +6,8 @@
 #include "ax_render.h"
 #include "title_ui.h"
 #include "extras_ui.h"
+#include "scene_ui.h"
+#include "save_ui.h"
 #include <unistd.h>
 #include <sys/stat.h>
 #include <zlib.h>
@@ -269,8 +271,22 @@ void frontend_text(const char *text) {
  if(used+n>=sizeof(st.text)){fail("Message buffer overflow");return;}
  memcpy(st.text+used,text,n+1);
 }
+/* story choices (kind2): nothing is pre-selected when the menu opens; the first
+ * d-pad/keyboard move (or a touch) arms a selection, A only confirms after that,
+ * so a stray A press cannot skip past the first option. */
+static bool need_sel;
+static void menu_move(int dx,int dy){
+ if(st.waiting!=2||!choice_open)return;
+ if(need_sel&&vm_choice_kind()==2){
+  need_sel=false;
+  selected=(dy<0&&choice_count)?choice_count-1:0;
+  gfx_dirty=true;return;
+ }
+ selected=vm_menu_nav(selected,dx,dy);gfx_dirty=true;
+}
 void set_choices(const char **items,unsigned count,int kind) {
  (void)kind;choice_count=count>100?100:count;selected=0;choice_open=true;
+ need_sel=(vm_choice_kind()==2); /* story branch: wait for explicit pick */
  for(unsigned i=0;i<choice_count;i++)snprintf(labels[i],sizeof(labels[i]),"%s",items[i]);
 }
 static SDL_Surface *msg_cache;
@@ -378,7 +394,7 @@ void frontend_present(void) {
    int y0=376+(104-(int)visible*lh)/2;
    for(unsigned j=0;j<visible;j++){
     int y=y0+(int)j*lh;
-    bool sel=(start+j==selected);
+    bool sel=(!need_sel&&(start+j==selected));
     text_at(labels[start+j],28,y+2,sel?0xffe9a0:0xffffff,584);
    }
   } else {
@@ -392,23 +408,12 @@ void frontend_present(void) {
    for(unsigned i=0;i<count;i++)results[i]=vm_menu_value(i);
    title_ui_draw(surfaces[7],canvas,results,count,selected);
   } else if(vm_choice_kind()==43){
-   /* scene replay (PC util43 paged): sc_bg backdrop + one event's 5 part cards
-    * + 前の/次の/戻る. Card art pending sc_pt mapping; text plates for now. */
    extern unsigned scene_page;
-   if(surfaces[1]){SDL_Rect fr={0,0,640,480};SDL_BlitSurface(surfaces[1],&fr,canvas,NULL);}
-   char t[40];snprintf(t,sizeof(t),"イベント %02u / 08",scene_page+1);
-   text_at(t,20,20,0x9fc4ff,300);
-   for(unsigned k=0;k<choice_count;k++){
-    SDL_Rect r;unsigned value=vm_menu_value(k);
-    if(!extras_rect(43,value,&r))continue;
-    bool sel=(k==selected);
-    bool en=extras_enabled(43,value);
-    SDL_FillRect(canvas,&r,rgb(canvas,sel?0x2a3a55:(en?0x1a2a3a:0x0c1118)));
-    uint32_t col=sel?0xffe9a0:(en?0xffffff:0x4a4a55);
-    text_at(labels[k],r.x+6,r.y+((value>=1&&value<=5)?(r.h-18)/2:3),col,r.w-12);
-   }
+   scene_ui_draw(canvas,scene_page,vm_menu_value(selected));
   } else if(vm_choice_kind()==41||vm_choice_kind()==42||vm_choice_kind()==44){
    extras_draw(canvas,vm_choice_kind(),vm_menu_value(selected));
+  } else if(save_ui_kind(vm_choice_kind())){
+   save_ui_draw(canvas,vm_choice_kind(),vm_menu_value(selected));
   } else {
   /* Remaining engine menus use the text fallback. */
   unsigned start=selected>=8?selected-7:0,visible=choice_count-start;if(visible>8)visible=8;
@@ -490,6 +495,11 @@ int load_state(unsigned slot) {
 static unsigned nav_step(unsigned s,int dx,int dy){
  unsigned n=choice_count; if(!n)return s;
  unsigned kind=vm_choice_kind();
+ if(save_ui_kind(kind)){
+  if(slot_pending>=0){int t=(int)s+dx+dy;return t<0?0:t>=(int)n?n-1:(unsigned)t;}
+  if(dx)return s<10?10:s>=10?0:s;
+  int t=(int)s+dy;return t<0?0:t>=(int)n?n-1:(unsigned)t;
+ }
  if(kind==2||kind==37||kind==38||kind==45||kind==46){
   if(dx)return s;
   int t=(int)s+dy; if(t<0)t=0; if(t>=(int)n)t=(int)n-1; return (unsigned)t;
@@ -521,6 +531,12 @@ static unsigned nav_step(unsigned s,int dx,int dy){
 /* L/R shoulder: page flip in album (44) / scene (43); elsewhere keep the
  * save/load menu shortcuts. */
 static void shoulder_page(bool next){
+ if(choice_open&&st.waiting==2&&save_ui_kind(vm_choice_kind())){
+  if(slot_pending>=0)return;
+  unsigned p=slot_page;if(next&&p<3)p++;else if(!next&&p>0)p--;
+  for(unsigned i=0;i<choice_count;i++)if(vm_menu_value(i)==SLOT_PAGE+p){vm_choose(i);return;}
+  return;
+ }
  if(choice_open&&st.waiting==2){
   unsigned kind=vm_choice_kind();
   if(kind==44||kind==43){
@@ -572,6 +588,9 @@ unsigned vm_menu_nav(unsigned sel,int dx,int dy){
 /* B in an engine menu = its 戻る/タイトル item, else direct close. */
 void vm_menu_cancel(void){
  unsigned kind=vm_choice_kind(),want;
+ if(save_ui_kind(kind)&&slot_pending>=0){
+  for(unsigned i=0;i<choice_count;i++)if(vm_menu_value(i)==SLOT_NO){vm_choose(i);return;}
+ }
  switch(kind){
   case 41: want=15; break;              /* タイトルに戻る */
   case 42: case 43: case 44: want=0; break; /* 戻る / タイトルへ */
@@ -593,15 +612,22 @@ static void album_back(void){
  }
  hide_msg=!hide_msg;gfx_dirty=true;
 }
-static void confirm(void) {if(st.waiting==3){extern void frontend_xfade_skip(void);frontend_xfade_skip();st.waiting=0;}else if(st.waiting==2){vm_choose(selected);if(st.waiting!=2)choice_open=false;}else if(!hide_msg)vm_advance(); /* story must not advance while the text box is hidden */}
+static void confirm(void) {if(st.waiting==3){extern void frontend_xfade_skip(void);frontend_xfade_skip();st.waiting=0;}else if(st.waiting==2){if(need_sel)return;vm_choose(selected);if(st.waiting!=2)choice_open=false;}else if(!hide_msg)vm_advance(); /* story must not advance while the text box is hidden */}
 /* Share the rendering geometry with pointer input; outside taps are not confirms. */
 static int choice_at(int x,int y) {
  if(!choice_open||st.waiting!=2)return -1;
  unsigned kind=vm_choice_kind();
+ if(save_ui_kind(kind)){
+  for(unsigned i=0;i<choice_count;i++){
+   SDL_Rect r;unsigned v=vm_menu_value(i);
+   if(save_ui_enabled(kind,v)&&save_ui_rect(kind,v,&r)&&x>=r.x&&x<r.x+r.w&&y>=r.y&&y<r.y+r.h)return (int)i;
+  }
+  return -1;
+ }
  if(kind==41||kind==42||kind==43||kind==44){
   for(unsigned i=0;i<choice_count;i++){
    SDL_Rect r;unsigned value=vm_menu_value(i);
-   if(extras_enabled(kind,value)&&extras_rect(kind,value,&r)&&x>=r.x&&x<r.x+r.w&&y>=r.y&&y<r.y+r.h)return (int)i;
+   if(extras_enabled(kind,value)&&(kind==43?scene_ui_rect(value,&r):extras_rect(kind,value,&r))&&x>=r.x&&x<r.x+r.w&&y>=r.y&&y<r.y+r.h)return (int)i;
   }
   return -1;
  }
@@ -625,7 +651,7 @@ static int choice_at(int x,int y) {
  return (int)base+(y-y0)/lh;
 }
 static void pointer_confirm(int x,int y) {
- if(st.waiting==2){int i=choice_at(x,y);if(i<0)return;selected=(unsigned)i;}
+ if(st.waiting==2){int i=choice_at(x,y);if(i<0)return;need_sel=false;selected=(unsigned)i;}
  confirm();
 }
 int main(int argc,char **argv) {
@@ -731,29 +757,32 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
  unsigned hold_ticks=0;const char *hold=getenv("KAWA_SMOKE_HOLD");
  if(hold)hold_ticks=strtoul(hold,NULL,10);
  ax_reset(&animation);Uint32 anim_last=SDL_GetTicks();
+ const char *scene_keys=smoke?getenv("KAWA_SCENE_KEYS"):NULL;
+ unsigned scene_key_pos=0;
  while(running) {
 #ifdef __SWITCH__
   if(!appletMainLoop())break;
 #endif
+  if(scene_keys&&st.waiting==2&&vm_choice_kind()==43&&scene_keys[scene_key_pos]){
+   char key=scene_keys[scene_key_pos++];SDL_Event injected={0};
+   if(key=='L'||key=='R'){
+    injected.type=SDL_CONTROLLERBUTTONDOWN;injected.cbutton.state=SDL_PRESSED;
+    injected.cbutton.button=key=='L'?SDL_CONTROLLER_BUTTON_LEFTSHOULDER:SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
+    SDL_PushEvent(&injected);
+   } /* '.' holds one frame, allowing the original hover animation to run */
+  }
   SDL_Event e;while(SDL_PollEvent(&e)) {
+   if(save_ui_event(&e))continue;
    if(e.type==SDL_QUIT)running=false;
    if(e.type==SDL_KEYDOWN&&!e.key.repeat) {
     switch(e.key.keysym.sym) {
     case SDLK_ESCAPE:running=false;break;
     case SDLK_RETURN:case SDLK_SPACE:
      confirm();break;
-    case SDLK_UP:
-     if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,0,-1);gfx_dirty=true;}
-     break;
-    case SDLK_DOWN:
-     if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,0,1);gfx_dirty=true;}
-     break;
-    case SDLK_LEFT:
-     if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,-1,0);gfx_dirty=true;}
-     break;
-    case SDLK_RIGHT:
-     if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,1,0);gfx_dirty=true;}
-     break;
+    case SDLK_UP:menu_move(0,-1);break;
+    case SDLK_DOWN:menu_move(0,1);break;
+    case SDLK_LEFT:menu_move(-1,0);break;
+    case SDLK_RIGHT:menu_move(1,0);break;
     case SDLK_F5:vm_slot_menu(true);break;case SDLK_F9:vm_slot_menu(false);break;
     case SDLK_x:ff_hold=true;gfx_dirty=true;break;
     case SDLK_b:
@@ -789,18 +818,10 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
 #endif
     switch(fb){
      case SDL_CONTROLLER_BUTTON_START:running=false;break;
-     case SDL_CONTROLLER_BUTTON_DPAD_UP:
-      if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,0,-1);gfx_dirty=true;}
-      break;
-     case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-      if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,0,1);gfx_dirty=true;}
-      break;
-     case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-      if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,-1,0);gfx_dirty=true;}
-      break;
-     case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-      if(choice_open&&st.waiting==2){selected=vm_menu_nav(selected,1,0);gfx_dirty=true;}
-      break;
+     case SDL_CONTROLLER_BUTTON_DPAD_UP:menu_move(0,-1);break;
+     case SDL_CONTROLLER_BUTTON_DPAD_DOWN:menu_move(0,1);break;
+     case SDL_CONTROLLER_BUTTON_DPAD_LEFT:menu_move(-1,0);break;
+     case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:menu_move(1,0);break;
      case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:shoulder_page(false);break;
      case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:shoulder_page(true);break;
     }
@@ -825,7 +846,12 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
     gfx_dirty=true;
    }
   }
-  Uint32 anim_now=SDL_GetTicks();animation_update(smoke?AX_TICK_MS:anim_now-anim_last);anim_last=anim_now;
+  Uint32 anim_now=SDL_GetTicks();
+  if(st.waiting==2&&vm_choice_kind()==43){
+   extern unsigned scene_page;
+   if(scene_ui_update(scene_page,vm_menu_value(selected),smoke?AX_TICK_MS:anim_now-anim_last))gfx_dirty=true;
+  }else animation_update(smoke?AX_TICK_MS:anim_now-anim_last);
+  anim_last=anim_now;
   {extern void frontend_xfade_poll(void);frontend_xfade_poll();}
   /* timed waits end as usual; a util35 wipe keeps waiting until its frames ran */
   if(st.waiting==3&&!frontend_xfade_active()&&!hide_msg&&(smoke||(Sint32)(SDL_GetTicks()-st.sys[255])>=0))st.waiting=0;
@@ -834,6 +860,7 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
    else if(st.waiting==1)vm_advance();
   }
   if(smoke&&st.waiting==2){
+   if(scene_keys&&vm_choice_kind()==43&&scene_keys[scene_key_pos]){frontend_present();continue;}
    {const char *kind=getenv("KAWA_ENGINESHOT");
     if(kind&&vm_choice_kind()==strtoul(kind,NULL,10)){
      static bool acted=false;
@@ -886,7 +913,7 @@ if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER|SDL_INIT_TIMER
   else {st.var[1]^=123;ax_reset(&animation);if(!load_state(99)||memcmp(&st,&old,sizeof(st))||memcmp(&animation,&oldanim,sizeof(animation)))fail("Smoke save round trip mismatch");else note("SAVE ROUNDTRIP PASS (VM + AX)");}
  }
  note("RESULT messages=%u unsupported=%u waiting=%u script=%s addr=%x",st.messages,unsupported,st.waiting,st.ip.script,st.ip.addr);
- extras_close();audio_fini();if(controller)SDL_GameControllerClose(controller);kawa_font_close(font);SDL_DestroyTexture(texture);SDL_FreeSurface(canvas);
+ save_ui_close();scene_ui_close();extras_close();audio_fini();if(controller)SDL_GameControllerClose(controller);kawa_font_close(font);SDL_DestroyTexture(texture);SDL_FreeSurface(canvas);
  for(unsigned i=0;i<NSURF;i++)if(surfaces[i])SDL_FreeSurface(surfaces[i]);
  SDL_DestroyRenderer(renderer);SDL_DestroyWindow(window);kawa_text_fini();SDL_Quit();return st.waiting==99?1:0;
 }
